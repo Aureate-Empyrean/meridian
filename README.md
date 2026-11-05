@@ -29,7 +29,7 @@ the long-term model are in
 | Installation | Version | Notes |
 | --- | --- | --- |
 | Local `aetest` (`http://localhost:12334`) | 0.3.1 | Verified 2026-11-05. Test data |
-| Production Nexus | 0.3.0 | Installed empty on 2026-11-05 (`../DEPLOYMENT_MERIDIAN_2026-11-05.md`); not re-checked since. It does not have the 0.3.1 graph arrow fix |
+| Production Nexus | 0.3.1 | Updated from 0.3.0 on 2026-11-06 with data preserved; graph-arrow fix deployed |
 
 ## Status
 
