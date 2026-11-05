@@ -1,0 +1,91 @@
+<!doctype html>
+<!--
+  Graph engine benchmark: synthetic networks rendered by the real engine (frontend/graph.js
+  with the vendored d3-force), outside Meridian. Driven by graph-bench.cjs; see
+  docs/GRAPH.md. Nothing here is served by the module.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Meridian graph benchmark</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #151210; }
+      #box { position: absolute; inset: 0; }
+      canvas { width: 100%; height: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="box"><canvas id="c" tabindex="0"></canvas></div>
+    <script src="../../frontend/vendor/d3-force.bundle.js"></script>
+    <script src="../../frontend/graph.js"></script>
+    <script>
+      // Deterministic synthetic network: communities of people with a few organizations and
+      // groups, dense inside a community and sparse between them, like a real address book.
+      function synthetic(n, edgesPerNode, seed = 7) {
+        let s = seed;
+        const rand = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+        const nodes = [];
+        const edges = [];
+        const communities = Math.max(4, Math.round(n / 60));
+        for (let i = 0; i < n; i++) {
+          const kind = i % 25 === 0 ? "o" : i % 40 === 0 ? "g" : "p";
+          nodes.push({ id: "n" + i, kind, label: (kind === "p" ? "Person " : kind === "o" ? "Organization " : "Group ") + i, self: i === 1, c: i % communities });
+        }
+        const cats = ["family", "social", "professional", "partner", "affiliation", "membership", "employment"];
+        const target = Math.round(n * edgesPerNode);
+        while (edges.length < target) {
+          const a = Math.floor(rand() * n);
+          const sameCommunity = rand() < 0.86;
+          let b = Math.floor(rand() * n);
+          if (sameCommunity) b = (Math.floor(rand() * (n / communities)) * communities + nodes[a].c) % n;
+          if (a === b) continue;
+          edges.push({ source: "n" + a, target: "n" + b, category: cats[Math.floor(rand() * cats.length)], state: rand() < 0.15 ? 1 : 0, conf: rand() < 0.05 ? 2 : 0, symmetric: rand() < 0.5 });
+        }
+        return { nodes, edges };
+      }
+      window.bench = async function (n, perNode) {
+        const canvas = document.getElementById("c");
+        const data = synthetic(n, perNode);
+        let settled;
+        const done = new Promise((r) => (settled = r));
+        const engine = new MeridianGraph.Engine(canvas, { onSettled: (stats) => settled(stats) });
+        const t0 = performance.now();
+        engine.setData(data);
+        const stats = await done;
+        const settleMs = performance.now() - t0;
+        engine.fit(0);
+        // Interaction: 120 frames of zoom and pan, timing each full redraw.
+        const draws = [];
+        for (let i = 0; i < 120; i++) {
+          engine.cam.k *= i < 60 ? 1.015 : 1 / 1.015;
+          engine.cam.x += 3;
+          const a = performance.now();
+          engine.draw();
+          draws.push(performance.now() - a);
+        }
+        // Focus: hover one well-connected node, which dims the rest.
+        const hub = engine.nodes.reduce((a, b) => (b.degree > a.degree ? b : a));
+        engine.hover = { type: "node", id: hub.id };
+        engine.mix = 1;
+        const f0 = performance.now();
+        engine.draw();
+        const focusMs = performance.now() - f0;
+        // Hit testing at 200 random points (quadtree after settling).
+        const h0 = performance.now();
+        for (let i = 0; i < 200; i++) engine.nodeAt(Math.random() * engine.w, Math.random() * engine.h);
+        const hitMs = (performance.now() - h0) / 200;
+        const e0 = performance.now();
+        engine.edgeAt(engine.w / 2, engine.h / 2);
+        const edgeHitMs = performance.now() - e0;
+        draws.sort((a, b) => a - b);
+        const result = {
+          nodes: n, edges: data.edges.length, ticks: stats.ticks, settleMs: Math.round(settleMs),
+          drawMedianMs: +draws[60].toFixed(2), drawP95Ms: +draws[113].toFixed(2), focusDrawMs: +focusMs.toFixed(2),
+          nodeHitMs: +hitMs.toFixed(3), edgeHitMs: +edgeHitMs.toFixed(2),
+        };
+        engine.destroy();
+        return result;
+      };
+    </script>
+  </body>
+</html>

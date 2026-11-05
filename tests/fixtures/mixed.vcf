@@ -1,0 +1,73 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Synthetic Test Data//EN
+N:Testová;Alžbeta;Mária;Ing.;PhD.
+FN:Ing. Alžbeta Testová PhD.
+NICKNAME:Betka,Ala
+TEL;TYPE=CELL,PREF:+421 905 000 111
+TEL;TYPE=WORK,VOICE:+421 2 0000 0000
+TEL;TYPE=HOME,FAX:02/0000 0001
+EMAIL;TYPE=INTERNET,HOME:alzbeta.testova@example.org
+EMAIL;TYPE=INTERNET,WORK,PREF:a.testova@example.com
+ADR;TYPE=HOME:;;Fiktívna 12;Bratislava;;811 01;Slovakia
+ORG:Example Fabrikát s.r.o.;Research
+TITLE:Research Engineer
+BDAY:1990-05-17
+URL:https://example.org/alzbeta
+X-SOCIALPROFILE;TYPE=github:https://github.com/example-alzbeta
+NOTE:Met at a synthetic conference.\nPrefers email.
+CATEGORIES:friends,work
+GENDER:F
+UID:synthetic-uid-0001
+PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIy
+REV:2026-11-01T10:00:00Z
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:Peter Example
+N:Example;Peter;;;
+TEL;TYPE="cell":tel:+421-905-000-222
+EMAIL:peter@example.net
+BDAY:--0403
+ANNIVERSARY:20150620
+IMPP:xmpp:peter@example.net
+KIND:individual
+X-CUSTOM-THING;X-PARAM=1:something we do not map
+END:VCARD
+BEGIN:VCARD
+VERSION:2.1
+N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:Mal=C3=BD;J=C3=A1n;;;
+FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:J=C3=A1n Mal=C3=BD
+TEL;HOME;VOICE:0905 000 333
+NOTE;ENCODING=QUOTED-PRINTABLE:First line=0D=0A=
+second line
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+N:;;;;
+FN:Example Industries
+ORG:Example Industries
+X-ABShowAs:COMPANY
+TEL;TYPE=WORK:+421 2 0000 0099
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+N:Apple;Anna;;;
+FN:Anna Apple
+item1.TEL:+1 555 0100
+item1.X-ABLabel:_$!<Mobile>!$_
+item2.EMAIL;type=INTERNET:anna@example.org
+item2.X-ABLabel:Studio
+item3.X-ABDATE;type=pref:2012-09-01
+item3.X-ABLabel:_$!<Anniversary>!$_
+item4.X-ABDATE:2019-03-02
+item4.X-ABLabel:Moved to the city
+BDAY;X-APPLE-OMIT-YEAR=1604:1604-12-24
+URL;type=pref:javascript:alert(1)
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Peter Example
+EMAIL:peter@example.net
+NOTE:Same person as card two
+END:VCARD
