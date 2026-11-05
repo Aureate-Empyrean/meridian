@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Meridian application icon: a meridian arc through three connected people on the copper
+       tile of the header mark. Full-bleed square; the host applies the corner radius. -->
+  <defs>
+    <linearGradient id="tile" x1=".25" y1=".07" x2=".75" y2=".93">
+      <stop offset="0" stop-color="#e3b497"/>
+      <stop offset=".5" stop-color="#c48663"/>
+      <stop offset="1" stop-color="#8c5638"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".28"/>
+      <stop offset=".55" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" fill="url(#tile)"/>
+  <rect width="48" height="48" fill="url(#sheen)"/>
+  <g transform="translate(9.33 9.33) scale(1.222)" fill="none" stroke="#241309" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.5"/>
+    <path d="M12 3.5c-3.2 2.4-4.6 5.2-4.6 8.5s1.4 6.1 4.6 8.5"/>
+    <path d="M9.6 8.4 15.6 10.6M9.8 15.4l5.8-4.8"/>
+    <circle cx="8.7" cy="8" r="1.6" fill="#241309" stroke="none"/>
+    <circle cx="16.4" cy="10.9" r="1.6" fill="#241309" stroke="none"/>
+    <circle cx="9" cy="16" r="1.6" fill="#241309" stroke="none"/>
+  </g>
+</svg>

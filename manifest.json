@@ -1,0 +1,48 @@
+{
+  "protocol": 1,
+  "id": "meridian",
+  "name": "Meridian",
+  "description": "People, organizations and groups, how they relate, and what you know about them: profiles, relationships, a graph of your network, a timeline of how it changed, and contact import.",
+  "version": "0.3.1",
+  "publisher": {
+    "name": "Aureate Empyrean",
+    "originalAuthors": [
+      "Aureate Empyrean contributors"
+    ]
+  },
+  "repository": "https://github.com/Aureate-Empyrean/meridian",
+  "license": "AGPL-3.0-or-later",
+  "nexus": ">=0.1.8,<0.2.0",
+  "container": {
+    "image": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "port": 17333
+  },
+  "capabilities": [
+    "ui.application",
+    "storage.data"
+  ],
+  "routes": {
+    "ui": "/",
+    "api": "/api",
+    "health": "/health"
+  },
+  "icon": "/icon.svg",
+  "events": {
+    "produces": [],
+    "consumes": []
+  },
+  "resources": [
+    {
+      "type": "person",
+      "resolvable": true
+    }
+  ],
+  "references": {
+    "version": 2,
+    "read": [],
+    "resolve": []
+  },
+  "backup": {
+    "version": 1
+  }
+}
