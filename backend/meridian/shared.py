@@ -190,8 +190,10 @@ def contact_addresses(conn, query, cursor=None):
             "parts": {"street": r["street"], "postal_code": r["postal_code"], "locality": r["locality"],
                       "region": r["region"], "country": r["country"]},
             "current": not until or today[: len(until)] <= until, "primary": bool(r["is_primary"]),
-            "open_path": f"/{ADDRESS_SECTIONS[r['entity_kind']]}/{r['entity_id']}",
+            "open_path": f"/{ADDRESS_SECTIONS[r['entity_kind']]}/{r['entity_id']}/addresses/{r['id']}",
             "place_ref": r["place_ref"], "updated_at": r["updated_at"],
+            **({"position": {"latitude": r["latitude"], "longitude": r["longitude"], "precision": r["geo_precision"]}}
+               if r["latitude"] is not None else {}),
         })  # fmt: skip
     following = offset + limit if len(rows) > limit else None
     return {"items": items, "next_cursor": str(following) if following else None}

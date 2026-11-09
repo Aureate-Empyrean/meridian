@@ -511,8 +511,9 @@ async function showRoute(next, options = {}) {
   const { view, id } = route;
   // A profile opened from elsewhere starts on Profile; re-rendering the same one keeps its tab.
   if ((view === "person" || view === "entity") && (id !== state.person?.id || state.route.view !== view)) state.tab = "overview";
-  if (options.tab && !route.interaction) state.tab = options.tab;
-  state.route = { view, id, kind: route.kind || null, interaction: route.interaction || null, path: route.path || null };
+  if (options.tab && !route.interaction && !route.address) state.tab = options.tab;
+  if (route.address) state.tab = "overview";
+  state.route = { view, id, kind: route.kind || null, interaction: route.interaction || null, address: route.address || null, path: route.path || null };
   return render(options);
 }
 /** An Interaction is shown on the profile of its first participant still in the directory. */
@@ -535,10 +536,10 @@ function routeFromLocation() {
 function routeFromPath(path) {
   const clean = String(path || "/").replace(/\/+$/, "") || "/";
   if (clean === "/") return { view: "dashboard", id: null };
-  const person = clean.match(/^\/people\/([0-9a-f-]{36})$/);
-  if (person) return { view: "person", id: person[1] };
-  const entity = clean.match(/^\/(organizations|groups)\/([0-9a-f-]{36})$/);
-  if (entity) return { view: "entity", id: entity[2], kind: entity[1] === "groups" ? "group" : "organization" };
+  const person = clean.match(/^\/people\/([0-9a-f-]{36})(?:\/addresses\/([0-9a-f-]{36}))?$/);
+  if (person) return { view: "person", id: person[1], ...(person[2] ? { address: person[2] } : {}) };
+  const entity = clean.match(/^\/(organizations|groups)\/([0-9a-f-]{36})(?:\/addresses\/([0-9a-f-]{36}))?$/);
+  if (entity) return { view: "entity", id: entity[2], kind: entity[1] === "groups" ? "group" : "organization", ...(entity[3] ? { address: entity[3] } : {}) };
   const interaction = clean.match(/^\/interactions\/([0-9a-f-]{36})$/);
   if (interaction) return { view: "interaction", id: null, interaction: interaction[1] };
   const view = clean.slice(1);
@@ -604,7 +605,17 @@ async function render({ focus = true, scroll = null } = {}) {
   const cameFrom = backToDirectory && state.person && $(`#people-list [data-id="${CSS.escape(state.person.id)}"]`);
   if (cameFrom) cameFrom.focus({ preventScroll: true });
   else if (focus) $("[data-heading]", sheet)?.focus({ preventScroll: true });
+  if (state.route.address) focusAddress(state.route.address);
   return outcome === "not-found" ? outcome : undefined;
+}
+/** Opened from a link to one address (Atlas): show that one, or say it is gone. */
+function focusAddress(id) {
+  const row = $(`[data-address-row="${CSS.escape(id)}"]`);
+  if (!row) return toast(t("That address is no longer on this contact."));
+  row.classList.add("is-target");
+  row.tabIndex = -1;
+  row.scrollIntoView({ block: "center", behavior: "auto" });
+  row.focus({ preventScroll: true });
 }
 /** A deliberate outcome: the address stays as it is, and nothing unrelated is shown instead. */
 function viewNotFound(sheet) {
@@ -1312,7 +1323,7 @@ async function refreshPeople({ fade = false } = {}) {
 const SECTION_KEYS = {
   names: ["id", "kind", "value", "given", "middle", "family", "prefix", "suffix"],
   contacts: ["id", "channel", "value", "label", "is_primary"],
-  addresses: ["id", "label", "street", "extended", "po_box", "locality", "region", "postal_code", "country", "formatted", "is_primary"],
+  addresses: ["id", "label", "street", "extended", "po_box", "locality", "region", "postal_code", "country", "formatted", "is_primary", "latitude", "longitude", "geo_precision", "geo_key"],
   dates: ["id", "kind", "label", "date", "description", "approximate"],
   employments: ["id", "organization", "organization_id", "title", "department", "role"],
   accounts: ["id", "service", "handle", "display_name", "url", "state"],
@@ -1321,7 +1332,7 @@ const SECTION_KEYS = {
   interests: ["id", "category", "subject", "sentiment", "context", "target_kind", "target_ref"],
 };
 const COMMON = ["valid_from", "valid_until", "confidence", "note"];
-const NULLABLE = new Set(["valid_from", "valid_until", "confidence", "date", "target_ref"]);
+const NULLABLE = new Set(["valid_from", "valid_until", "confidence", "date", "target_ref", "organization_id", "latitude", "longitude"]);
 /* 0.7.0 (roadmap Phase 3): open vocabularies offered by the interface; any other word is kept. */
 const EDUCATION_KINDS = { primary_school: "Primary school", secondary_school: "Secondary school", university: "University", course: "Course", certification: "Certification", training: "Training", other: "Other" };
 const EDUCATION_STATUS = { studying: "Studying", graduated: "Graduated", dropped_out: "Dropped out", interrupted: "Interrupted", unknown: "Unknown" };
@@ -1481,8 +1492,8 @@ function psection(key, title, iconName, rows, emptyText, addLabel) {
 }
 const recordSub = (r) => [period(r), r.confidence ? t("confidence: {c}", { c: t(r.confidence) }) : "", r.note].filter(Boolean).join(" · ");
 const act = (name, label, attrs) => `<button class="ae-btn ae-btn--quiet ae-btn--icon ae-btn--sm act" ${attrs} aria-label="${esc(label)}" title="${esc(label)}">${icon(name)}</button>`;
-function vrow(label, value, { sub = "", former = false, acts = "", strong = false, primary: isPrimary = false } = {}) {
-  return `<div class="vrow ${former ? "former" : ""}"><span class="label">${esc(label)}${isPrimary ? ` <span class="primary-mark">${esc(t("primary"))}</span>` : ""}</span><span class="value ${strong ? "strong" : ""}">${value}${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</span><span class="acts">${acts}</span></div>`;
+function vrow(label, value, { sub = "", former = false, acts = "", strong = false, primary: isPrimary = false, attr = "" } = {}) {
+  return `<div class="vrow ${former ? "former" : ""}" ${attr}><span class="label">${esc(label)}${isPrimary ? ` <span class="primary-mark">${esc(t("primary"))}</span>` : ""}</span><span class="value ${strong ? "strong" : ""}">${value}${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</span><span class="acts">${acts}</span></div>`;
 }
 function addressText(a) {
   if (a.formatted) return a.formatted;
@@ -1670,7 +1681,7 @@ function overviewRows(p, key) {
     return p.employments.map((e) =>
       vrow(e.organization || t("Work"), esc(e.title || e.role || t("Role not recorded")), { sub: [e.department, e.title && e.role ? e.role : "", recordSub(e)].filter(Boolean).join(" · "), former: !!e.valid_until, strong: true, acts: e.organization_id ? act("external", t("Open {name}", { name: e.organization }), `data-act="open-entity" data-kind="organization" data-id="${esc(e.organization_id)}"`) : "" }),
     );
-  if (key === "addresses") return p.addresses.map((a) => vrow(a.label || t("Address"), esc(addressText(a)), { sub: recordSub(a), former: !!a.valid_until, primary: a.is_primary }));
+  if (key === "addresses") return p.addresses.map((a) => vrow(a.label || t("Address"), esc(addressText(a)), { attr: `data-address-row="${esc(a.id)}"`, sub: recordSub(a), former: !!a.valid_until, primary: a.is_primary }));
   if (key === "accounts")
     return p.accounts.map((a) =>
       vrow(a.service, esc(a.handle || a.display_name || a.url), { sub: [a.display_name && a.handle ? a.display_name : "", a.state !== "unknown" ? t(a.state) : "", recordSub(a)].filter(Boolean).join(" · "), former: !!a.valid_until, strong: true, acts: a.url ? act("external", t("Open profile"), `data-act="external" data-url="${esc(a.url)}"`) : "" }),
@@ -2420,8 +2431,8 @@ function typeOptions(anchorKind, targetKind, current) {
   return `<option value="" ${current ? "" : "selected"} disabled>${esc(t("Choose…"))}</option>${groups.join("")}<option value="custom" ${current === "custom" ? "selected" : ""}>${esc(t("Something else…"))}</option>`;
 }
 /** Search-and-pick for People, Organizations and Groups, as a combobox. */
-function entityPicker(id, { kinds, label, value = null }) {
-  return `<div class="picker" id="${id}" data-kinds="${kinds.join(",")}">
+function entityPicker(id, { kinds, label, value = null, create = null }) {
+  return `<div class="picker" id="${id}" data-kinds="${kinds.join(",")}" ${create ? `data-create="${create}"` : ""}>
     <input type="hidden" data-picked value="${esc(value?.id || "")}" data-kind="${esc(value?.kind || "")}" data-name="${esc(value?.display_name || "")}">
     <div class="picker-chosen" ${value ? "" : "hidden"}>${value ? pickerChosen(value) : ""}</div>
     <div class="search-box picker-search" ${value ? "hidden" : ""}>${icon("search")}
@@ -2447,7 +2458,15 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
     const row = $$(".row", box)[i];
     if (row) input.setAttribute("aria-activedescendant", row.id);
   };
-  const pick = (e) => {
+  const pick = async (e) => {
+    if (e.creating) {
+      try {
+        e = await api("/entities", "POST", { kind: e.creating, names: [{ kind: "full", value: e.display_name }] });
+      } catch (error) {
+        show(false);
+        return toast(error.message, "danger");
+      }
+    }
     const hidden = $("[data-picked]", root);
     hidden.value = e.id;
     hidden.dataset.kind = e.kind;
@@ -2482,6 +2501,8 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
       const data = await api("/search" + query({ q, kinds: root.dataset.kinds })).catch(() => ({ entities: [] }));
       if (mine !== seq) return;
       items = data.entities.filter((e) => !exclude.includes(e.id));
+      // A new one is offered only when nothing with this name exists; similar names stay visible above it.
+      if (root.dataset.create && !data.alias && !data.entities.some((e) => foldText(e.display_name) === foldText(q))) items.push({ creating: root.dataset.create, display_name: q, id: "", kind: root.dataset.create });
       // @me is the person marked as the user (Settings → You); say so when no one is, or when
       // that person cannot be chosen here (this profile itself, or a picker for groups).
       const empty =
@@ -2493,7 +2514,7 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
               : t("@me is a person, and only {kinds} can be chosen here.", { kinds: root.dataset.kinds.split(",").map((k) => t(KIND_NOUN[k]).toLowerCase()).join(", ") })
           : t("No one matches “{q}”.", { q });
       box.innerHTML = items.length
-        ? `<div class="rows">${items.map((e, i) => `<button class="row" type="button" role="option" id="${root.id}-o${i}" aria-selected="false" data-pick="${i}" tabindex="-1">${avatar(e.display_name, e.id, `sm is-${e.kind}`)}<span class="grow"><span class="primary">${esc(shownName(e))}${e.is_self ? ` <span class="self-badge">${esc(t("Me"))}</span>` : ""}</span><span class="secondary">${esc(t(KIND_NOUN[e.kind]))}${e.work ? ` · ${esc(e.work)}` : ""}</span></span></button>`).join("")}</div>`
+        ? `<div class="rows">${items.map((e, i) => `<button class="row" type="button" role="option" id="${root.id}-o${i}" aria-selected="false" data-pick="${i}" tabindex="-1">${avatar(e.display_name, e.id, `sm is-${e.kind}`)}<span class="grow"><span class="primary">${e.creating ? esc(t("Create group “{name}”", { name: e.display_name })) : esc(shownName(e))}${e.is_self ? ` <span class="self-badge">${esc(t("Me"))}</span>` : ""}</span><span class="secondary">${e.creating ? esc(t("New group")) : esc(t(KIND_NOUN[e.kind]))}${e.work ? ` · ${esc(e.work)}` : ""}</span></span></button>`).join("")}</div>`
         : `<p class="empty">${esc(empty)}</p>`;
       active = -1;
       show(true);
@@ -2959,7 +2980,7 @@ async function openMembership(record, invoker) {
   openShell("membership", {
     eyebrow: p.display_name,
     title: record ? t("Membership") : fromGroup ? t("Add a member") : t("Add to a group"),
-    body: `<div class="ae-field"><span class="ae-label">${esc(fromGroup ? t("Member") : t("Group"))}</span>${entityPicker("mem-target", { kinds: fromGroup ? ["person", "organization"] : ["group"], label: fromGroup ? t("Search people and organizations") : t("Search groups"), value: other })}</div>
+    body: `<div class="ae-field"><span class="ae-label">${esc(fromGroup ? t("Member") : t("Group"))}</span>${entityPicker("mem-target", { kinds: fromGroup ? ["person", "organization"] : ["group"], label: fromGroup ? t("Search people and organizations") : t("Search groups, or type a new name"), value: other, create: fromGroup ? null : "group" })}</div>
       <div class="ae-field"><label class="ae-label" for="mem-role">${esc(t("Role (optional)"))}</label><input class="ae-input" id="mem-role" maxlength="80" value="${esc(record?.role || "")}" placeholder="${esc(t("e.g. “organizer”, “founding member”"))}"></div>
       ${periodFields(record || {})}
       ${knowledgeFields(record || {})}
@@ -3060,7 +3081,8 @@ const EDITORS = {
     add: "Add organization or role",
     blank: () => ({ organization: "", title: "" }),
     fields: [
-      { k: "organization", label: "Organization", type: "text", max: 200 },
+      { k: "organization", label: "Organization", type: "org", max: 200 },
+      { k: "organization_id", type: "hidden" },
       { k: "title", label: "Title", type: "text", max: 200 },
       { k: "department", label: "Department", type: "text", max: 200 },
       { k: "role", label: "Role", type: "text", max: 200, placeholder: "e.g. founder, volunteer" },
@@ -3074,7 +3096,8 @@ const EDITORS = {
     add: "Add school, course or training",
     blank: () => ({ organization: "", kind: "university", status: "" }),
     fields: [
-      { k: "organization", label: "School or institution", type: "text", max: 200 },
+      { k: "organization", label: "School or institution", type: "org", max: 200 },
+      { k: "organization_id", type: "hidden" },
       { k: "kind", label: "Kind", type: "kind", options: Object.keys(EDUCATION_KINDS), names: EDUCATION_KINDS },
       { k: "program", label: "Program", type: "text", max: 200 },
       { k: "field", label: "Field of study", type: "text", max: 200 },
@@ -3118,9 +3141,11 @@ const EDITORS = {
     title: "Addresses",
     add: "Add address",
     blank: () => ({ label: "home", is_primary: false }),
+    addressSearch: true,
+    lead: ["label", "is_primary"],
     fields: [
       { k: "label", label: "Label", type: "list", list: "address-labels", max: 40 },
-      { k: "street", label: "Street", type: "text", max: 200 },
+      { k: "street", label: "Street and number", type: "text", max: 200 },
       { k: "extended", label: "Apartment, building", type: "text", max: 200 },
       { k: "postal_code", label: "Postal code", type: "text", max: 30 },
       { k: "locality", label: "City", type: "text", max: 120 },
@@ -3128,6 +3153,11 @@ const EDITORS = {
       { k: "country", label: "Country", type: "text", max: 120 },
       { k: "po_box", label: "PO box", type: "text", max: 60 },
       { k: "is_primary", label: "Primary", type: "check" },
+      { k: "formatted", type: "hidden" },
+      { k: "latitude", type: "hidden" },
+      { k: "longitude", type: "hidden" },
+      { k: "geo_precision", type: "hidden" },
+      { k: "geo_key", type: "hidden" },
     ],
     more: ["valid_from", "valid_until", "confidence", "note"],
   },
@@ -3179,6 +3209,7 @@ function control(f, value, uid) {
   if (f.type === "hidden") return `<input type="hidden" data-k="${f.k}" value="${esc(value ?? "")}">`;
   const label = `<label class="ae-label" for="${id}">${esc(t(f.label))}</label>`;
   if (f.type === "check") return `<label class="check-line"><input type="checkbox" id="${id}" data-k="${f.k}" ${value ? "checked" : ""}> ${esc(t(f.label))}</label>`;
+  if (f.type === "org") return `<div class="ae-field combo">${label}<input class="ae-input" id="${id}" data-k="${f.k}" data-combo-input="org" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="${id}-list" maxlength="${f.max}" value="${esc(value ?? "")}" placeholder="${esc(t("Start typing to find one already in Meridian"))}" autocomplete="off"><div class="combo-list" id="${id}-list" role="listbox" hidden></div></div>`;
   if (f.type === "date") return `<div class="ae-field" style="grid-column:1 / -1"><span class="ae-label">${esc(t(f.label))}</span>${dateInput(f.k, value)}</div>`;
   if (f.type === "select" || f.type === "kind") {
     const opts = f.type === "kind" ? f.options.map((o) => [o, f.names[o]]) : f.options;
@@ -3194,8 +3225,11 @@ function editorRow(spec, record) {
   const uid = ++rowSerial;
   const moreFields = spec.more.map((k) => MORE[k]).filter((f) => !spec.fields.some((x) => x.k === f.k));
   const hasMore = moreFields.some((f) => record[f.k]);
+  const lead = spec.lead ? spec.fields.filter((f) => spec.lead.includes(f.k)) : [];
+  const details = spec.lead ? spec.fields.filter((f) => !spec.lead.includes(f.k)) : spec.fields;
+  const searchBox = spec.addressSearch ? `<div class="combo address-search" data-address-search hidden><label class="ae-label" for="f-${uid}-search">${esc(t("Search for an address"))}</label><input class="ae-input address-search-input" id="f-${uid}-search" data-nosave data-combo-input="address" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="f-${uid}-search-list" maxlength="120" placeholder="${esc(t("Street and number, city or place"))}" autocomplete="off"><div class="combo-list" id="f-${uid}-search-list" role="listbox" hidden></div></div><p class="addr-preview" data-address-preview ${addressText(record) ? "" : "hidden"}>${esc(addressText(record))}</p><p class="ae-hint" data-address-note aria-live="polite"></p>` : "";
   return `<div class="editor-row" data-row data-id="${esc(record.id || "")}">
-    <div class="fields">${spec.fields.map((f) => control(f, record[f.k], uid)).join("")}</div>
+    ${spec.lead ? `<div class="fields">${lead.map((f) => control(f, record[f.k], uid)).join("")}</div>${searchBox}<details class="addr-details"><summary>${esc(t("Edit address details"))}</summary><div class="fields">${details.map((f) => control(f, record[f.k], uid)).join("")}</div></details>` : `<div class="fields">${details.map((f) => control(f, record[f.k], uid)).join("")}</div>`}
     <div class="row-tools">${moreFields.length ? `<details ${hasMore ? "open" : ""}><summary>${esc(t("Period, confidence and note"))}</summary><div class="fields">${moreFields.map((f) => control(f, record[f.k], uid)).join("")}</div></details>` : "<span></span>"}
       <button class="ae-btn ae-btn--quiet ae-btn--sm" data-act="remove-row">${icon("x")}<span>${esc(t("Remove"))}</span></button></div>
   </div>`;
@@ -3239,10 +3273,11 @@ const panel = {
     return !!this.el() && !this.closing && (this.section === "interaction" ? ixState() : this.section === "event" ? formState() + JSON.stringify(evEditor.participants) : formState()) !== this.snapshot;
   },
 };
-const rowState = (row) => JSON.stringify($$("input, select, textarea", row).map((el) => (el.type === "checkbox" ? el.checked : el.value)));
+const FORM_FIELDS = "input:not([data-nosave]), select, textarea";
+const rowState = (row) => JSON.stringify($$(FORM_FIELDS, row).map((el) => (el.type === "checkbox" ? el.checked : el.value)));
 function formState(body = $("#panel-body")) {
   if (!body) return "";
-  return JSON.stringify($$("[data-row], input, select, textarea", body).map((el) => (el.matches("[data-row]") ? `row:${el.dataset.id}` : el.type === "checkbox" ? el.checked : el.value)));
+  return JSON.stringify($$(`[data-row], ${FORM_FIELDS}`, body).map((el) => (el.matches("[data-row]") ? `row:${el.dataset.id}` : el.type === "checkbox" ? el.checked : el.value)));
 }
 function panelBody(section) {
   const p = panel.session?.person || state.person;
@@ -3252,7 +3287,7 @@ function panelBody(section) {
   const records = editable(p)[section];
   // An empty section opens ready to type into; an untouched blank row is ignored on save.
   const rows = records.length ? records.map((r) => editorRow(spec, r)) : [editorRow(spec, spec.blank()).replace("data-row ", "data-row data-starter ")];
-  return `${DATALISTS}<div id="editor-rows">${rows.join("")}</div>
+  return `${DATALISTS}${section === "addresses" ? '<div id="address-search-status"></div>' : ""}<div id="editor-rows">${rows.join("")}</div>
     <button class="ae-btn ae-btn--sm" data-act="add-row" style="margin-top:14px">${icon("plus")}<span>${esc(t(spec.add))}</span></button>
     ${section === "names" ? `<p class="ae-hint" style="margin-top:14px">${esc(t("The first full name is the name Meridian shows. A person needs at least one name."))}</p>` : ""}
     ${section === "contacts" ? `<p class="ae-hint" style="margin-top:14px">${esc(t("No longer used? Set “Until” under Period instead of removing it — Meridian keeps it as a former value."))}</p>` : ""}`;
@@ -3306,6 +3341,7 @@ function showContactTab(section) {
   body.replaceChildren(pane.node);
   body.scrollTop = pane.scroll;
   $("#panel-title").textContent = panelTitle(section);
+  if (section === "addresses") refreshAddressSearch();
   $$("[data-act=panel-section]", panel.el()).forEach((tab) => {
     const active = tab.dataset.section === section;
     tab.classList.toggle("is-active", active);
@@ -3320,7 +3356,8 @@ function updateContactStatus() {
   const button = $('[data-act="panel-save"]', panel.el());
   button.disabled = !dirty || panel.saving;
   button.classList.toggle("is-busy", panel.saving);
-  button.textContent = t("Save");
+  // Leaving a field fires this during the press; replacing the label then makes Safari drop the click.
+  if (button.textContent !== t("Save")) button.textContent = t("Save");
 }
 function confirmContactClose() {
   if (panel.saving) return Promise.resolve(false);
@@ -3506,7 +3543,7 @@ function newPerson({ makeSelf = false } = {}) {
         <div class="ae-field"><label class="ae-label" for="np-phone">${esc(t("Phone"))}</label><input class="ae-input" id="np-phone" maxlength="40" inputmode="tel" autocomplete="off"></div>
         <div class="ae-field"><label class="ae-label" for="np-email">${esc(t("Email"))}</label><input class="ae-input" id="np-email" maxlength="320" inputmode="email" autocomplete="off"></div>
         <div class="ae-field span"><span class="ae-label">${esc(t("Birthday — leave unknown parts empty"))}</span>${dateInput("birth", null)}</div>
-        <div class="ae-field"><label class="ae-label" for="np-org">${esc(t("Organization"))}</label><input class="ae-input" id="np-org" maxlength="200" autocomplete="off"></div>
+        <div class="ae-field"><label class="ae-label" for="np-org">${esc(t("Organization"))}</label><div class="combo"><input class="ae-input" id="np-org" data-combo-input="org" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="np-org-list" maxlength="200" autocomplete="off"><div class="combo-list" id="np-org-list" role="listbox" hidden></div></div></div>
         <div class="ae-field"><label class="ae-label" for="np-title">${esc(t("Title"))}</label><input class="ae-input" id="np-title" maxlength="200" autocomplete="off"></div>
       </div>
       <p class="ae-hint">${esc(t("Only a name is required. You can add everything else later."))}</p>
@@ -4436,9 +4473,14 @@ document.addEventListener("click", async (event) => {
     }
     if (act === "panel-close") return requestClosePanel();
     if (act === "panel-save") return savePanel(el);
+    if (act === "address-search-consent") {
+      await api("/address-search/consent", "PUT", { enabled: el.dataset.enabled === "1" });
+      return refreshAddressSearch();
+    }
     if (act === "add-row") {
       const spec = EDITORS[panel.section];
       $("#editor-rows").insertAdjacentHTML("beforeend", editorRow(spec, spec.blank()));
+      if (spec.addressSearch) refreshAddressSearch();
       const row = $("#editor-rows [data-row]:last-child");
       animate(row, [{ opacity: 0, transform: "translateY(-4px)" }, { opacity: 1, transform: "none" }], MOTION.page);
       $("input:not([type=checkbox]), select", row)?.focus();

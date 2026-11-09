@@ -87,6 +87,14 @@ class ContactIn(Record):
         return self
 
 
+class AddressSearchIn(Strict):
+    q: str = Field(max_length=200)
+
+
+class AddressSearchConsent(Strict):
+    enabled: bool
+
+
 class AddressIn(Record):
     label: str = Field(default="", max_length=40)
     street: str = Field(default="", max_length=200)
@@ -98,6 +106,10 @@ class AddressIn(Record):
     country: str = Field(default="", max_length=120)
     formatted: str = Field(default="", max_length=1000)
     is_primary: bool = False
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    geo_precision: str = Field(default="", max_length=20)
+    geo_key: str = Field(default="", max_length=700)
 
     @model_validator(mode="after")
     def has_text(self):

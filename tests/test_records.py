@@ -400,10 +400,12 @@ def test_schema_7_is_additive_and_reversible(tmp_path, monkeypatch):
     with TestClient(create_app(tmp_path)):
         pass
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
         after = {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t}")] for t in before}
         assert after == before  # nothing reinterpreted: a favorite stays a Fact
         assert conn.execute("SELECT count(*) FROM interests").fetchone()[0] == 0
+        conn.executescript(dbmod.SCHEMA_8_REVERSAL)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
         conn.executescript(dbmod.SCHEMA_7_REVERSAL)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

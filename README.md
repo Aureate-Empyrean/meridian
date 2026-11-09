@@ -9,12 +9,12 @@ the long-term model are in
 
 | | |
 | --- | --- |
-| Module ID, version | `meridian`, 0.11.0 (schema 7) in this source and on aetest; 0.10.0 in production |
+| Module ID, version | `meridian`, 0.12.0 (schema 8) in this source and on aetest; 0.10.0 in production |
 | Port | 17333 |
 | Nexus range | `>=0.1.8,<0.2.0` (0.6.1 tested on Nexus 0.1.13 on aetest; production runs 0.1.14, which supports every contract used) |
 | Capabilities | `ui.application`, `storage.data`, `projections.read`, `references.create`, and since 0.6.0 `events.publish`, `references.read`, `references.resolve` |
 | Resources | `person`, `organization`, `group` (resolvable), Entity References v2 with enumeration; outgoing `meridian.representative-image` edges to Argus photos (readers `argus`); resolve scopes `chronos`/`event`, `mnemosyne`/`note`, `task`, `project`, `collection` (to name the items that link here) |
-| Projections | Reads `argus`/`photo-library` and `argus`/`photo-renditions`; provides `dated-items` (birthdays, anniversaries) and `people-directory` (names only) |
+| Projections | Reads `argus`/`photo-library`, `argus`/`photo-renditions` and, since 0.12.0, `atlas`/`address-suggest`; provides `dated-items` (birthdays, anniversaries) and `people-directory` (names only) |
 | Events | Produces `meridian.dated-items.changed` (a hint after person writes) |
 | Backup | Backup v1, format `meridian-sqlite`; a backup is restorable by `>=<its version>,<1` |
 | Runtime | Python 3.13, FastAPI, SQLite; d3-force vendored in the page; no external services |
@@ -85,6 +85,10 @@ Unsaved side-panel edits are protected everywhere: a click asks first; Back/Forw
 editor and a notice, without touching history; leaving Meridian or reloading keeps an acknowledged draft, offered in a
 tray. A recovered contact draft that meets a newer saved record is refused as a conflict, with **Keep my version**.
 Nexus owns the browser URL; see `../empyrean-nexus/docs/navigation-history.md`.
+
+### Address search and reuse of records (0.12.0 on aetest)
+
+The address editor can find real addresses as you type, after you turn it on there and Atlas's online maps are on. Only the search text leaves, through Atlas to Photon; Meridian itself has no network access. Choosing a result fills the structured fields. Every field stays editable by hand, and a corrected address loses its map position. Work, education and New Organization find existing Organizations; Membership finds or creates groups. Similar names are never merged. Design: [ADR 0031](../architecture/decisions/0031-address-suggestions-through-atlas.md). Browser journey: `tests/e2e/qol_e2e.cjs` (aetest only). Larger requests: [audit](../architecture/audits/2026-11-09-meridian-contact-editing-qol-audit.md).
 
 ### Education, Interests and Interactions (0.7.0; 0.9.0 on aetest)
 

@@ -245,7 +245,24 @@ CREATE TRIGGER interests_drop_provenance AFTER DELETE ON interests BEGIN
 CREATE TRIGGER interactions_drop_provenance AFTER DELETE ON interactions BEGIN
  DELETE FROM provenance WHERE record_kind='interaction' AND record_id=OLD.id; END;
 """,
+    # 0.12.0 (schema 8): where an address chosen from a search is. geo_key records the address
+    # the coordinates belong to, so they cannot outlive a later correction.
+    """
+ALTER TABLE addresses ADD COLUMN latitude REAL;
+ALTER TABLE addresses ADD COLUMN longitude REAL;
+ALTER TABLE addresses ADD COLUMN geo_precision TEXT NOT NULL DEFAULT '';
+ALTER TABLE addresses ADD COLUMN geo_key TEXT NOT NULL DEFAULT '';
+""",
 ]
+
+# 0.12.0 (schema 8): going back to 0.11.0 without a backup loses only stored address positions.
+SCHEMA_8_REVERSAL = """
+ALTER TABLE addresses DROP COLUMN latitude;
+ALTER TABLE addresses DROP COLUMN longitude;
+ALTER TABLE addresses DROP COLUMN geo_precision;
+ALTER TABLE addresses DROP COLUMN geo_key;
+PRAGMA user_version=7;
+"""
 
 # 0.7.0 (schema 7): going back to 0.6.x without a backup drops only what schema 7 added;
 # Education, Interests and Interactions recorded since are lost (queue their Nexus edges for

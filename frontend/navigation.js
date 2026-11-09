@@ -20,8 +20,9 @@ const MeridianRoutes = {
   serialize(route) {
     if (route.view === "not-found") return route.path;
     if (route.interaction) return `/interactions/${route.interaction}`;
-    if (route.view === "person") return `/people/${route.id}`;
-    if (route.view === "entity") return `/${route.kind === "group" ? "groups" : "organizations"}/${route.id}`;
+    const address = route.address ? `/addresses/${route.address}` : "";
+    if (route.view === "person") return `/people/${route.id}${address}`;
+    if (route.view === "entity") return `/${route.kind === "group" ? "groups" : "organizations"}/${route.id}${address}`;
     return route.view === "dashboard" || !route.view ? "/" : `/${route.view}`;
   },
 };
@@ -31,9 +32,9 @@ let shownRoute = null;
 let heldRoute = null;
 const retainedDrafts = new Map();
 
-const fieldValues = (root) => $$("input, select, textarea", root).map((el) => (el.type === "checkbox" || el.type === "radio" ? el.checked : el.value));
+const fieldValues = (root) => $$(FORM_FIELDS, root).map((el) => (el.type === "checkbox" || el.type === "radio" ? el.checked : el.value));
 function setFields(root, values) {
-  $$("input, select, textarea", root).forEach((el, i) => {
+  $$(FORM_FIELDS, root).forEach((el, i) => {
     if (values[i] === undefined) return;
     if (el.type === "checkbox" || el.type === "radio") el.checked = !!values[i];
     else el.value = values[i];

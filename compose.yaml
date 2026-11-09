@@ -4,6 +4,6 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile
-    image: meridian:0.11.0
+    image: meridian:0.12.0
     network_mode: none
     entrypoint: [python, -c, "print('Install manifest.local.json in Nexus; the broker owns the runtime.')"]

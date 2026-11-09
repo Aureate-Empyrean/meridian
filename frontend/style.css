@@ -5756,3 +5756,80 @@ mark {
   outline-offset: 2px;
   border-radius: 6px;
 }
+
+/* Search-as-you-type fields: real-world addresses and existing Organizations. */
+.combo {
+  position: relative;
+}
+.combo-list {
+  margin-top: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--m-line-strong);
+  border-radius: var(--m-r-list);
+  background: var(--m-overlay);
+}
+.combo-option {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+}
+.combo-option:hover,
+.combo-option.is-active {
+  background: var(--accent-soft, rgba(127, 127, 127, 0.15));
+}
+.combo-option .primary,
+.combo-option .secondary {
+  display: block;
+}
+.combo-option .secondary,
+.combo-note,
+.combo-foot {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.combo-note,
+.combo-foot {
+  margin: 0;
+  padding: 8px 12px;
+}
+.address-search {
+  margin-top: 10px;
+}
+.address-search-input {
+  font-size: 15px;
+}
+.addr-preview {
+  margin: 8px 0 0;
+  white-space: pre-line;
+}
+.addr-details {
+  margin-top: 8px;
+}
+.addr-details summary {
+  cursor: pointer;
+}
+.address-consent {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warn-soft, rgba(127, 127, 127, 0.12));
+}
+.address-consent p {
+  flex: 1 1 240px;
+  margin: 0;
+}
+.vrow.is-target {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
