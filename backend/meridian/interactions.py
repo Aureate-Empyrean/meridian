@@ -49,15 +49,14 @@ def resolve(conn, iid, requester):
         "SELECT resource FROM interaction_links WHERE interaction_id=?", (iid,))}  # fmt: skip
     if requester not in modules:
         return None, 403
-    who = conn.execute(
-        "SELECT x.id, x.kind FROM interaction_participants p JOIN entities x ON x.id=p.entity_id "
-        "WHERE p.interaction_id=? AND x.deleted_at IS NULL ORDER BY p.position LIMIT 1",
+    has_participant = conn.execute(
+        "SELECT 1 FROM interaction_participants p JOIN entities x ON x.id=p.entity_id "
+        "WHERE p.interaction_id=? AND x.deleted_at IS NULL LIMIT 1",
         (iid,),
     ).fetchone()
     out = {"resource": reference(iid), "label": row["summary"][:200]}
-    if who:
-        section = {"person": "people", "organization": "organizations", "group": "groups"}
-        out["open_path"] = f"/{section[who['kind']]}/{who['id']}"
+    if has_participant:
+        out["open_path"] = f"/interactions/{iid}"
     return out, 200
 
 

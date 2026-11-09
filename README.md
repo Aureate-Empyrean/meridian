@@ -9,7 +9,7 @@ the long-term model are in
 
 | | |
 | --- | --- |
-| Module ID, version | `meridian`, 0.10.0 (schema 7) in this source, on aetest and in production |
+| Module ID, version | `meridian`, 0.11.0 (schema 7) in this source and on aetest; 0.10.0 in production |
 | Port | 17333 |
 | Nexus range | `>=0.1.8,<0.2.0` (0.6.1 tested on Nexus 0.1.13 on aetest; production runs 0.1.14, which supports every contract used) |
 | Capabilities | `ui.application`, `storage.data`, `projections.read`, `references.create`, and since 0.6.0 `events.publish`, `references.read`, `references.resolve` |
@@ -73,13 +73,18 @@ back to initials when there is no picture or Argus cannot provide it. Meridian r
 Status and verification: [`../argus/docs/STATUS.md`](../argus/docs/STATUS.md). Browser journey:
 `tests/e2e/pictures_e2e.py` (aetest only).
 
-### Navigation (0.4.1)
+### Navigation (0.11.0 on aetest)
 
 Back/Forward and deep links through Nexus navigation history: `frontend/navigation.js` is the route adapter
-(routes `/`, `/people[/<id>]`, `/organizations[/<id>]`, `/groups[/<id>]`, `/graph`, `/timeline`, `/import`,
-`/trash`, `/settings`; tabs and filters are not in URLs), with the vendored SDK and a guard for unsaved
-side-panel edits. Leaving Meridian with unsaved edits still discards them. Nexus owns the browser URL; see
-`../empyrean-nexus/docs/navigation-history.md`.
+(routes `/`, `/people[/<id>]`, `/organizations[/<id>]`, `/groups[/<id>]`, `/interactions/<id>`, `/graph`, `/timeline`,
+`/import`, `/trash`, `/settings`). An unknown address is an explicit not-found page. An Interaction link selects that
+Interaction on its first remaining participant's profile. Search, filters, loaded count, tab and scroll are private
+per-entry state.
+
+Unsaved side-panel edits are protected everywhere: a click asks first; Back/Forward moves the address and keeps the
+editor and a notice, without touching history; leaving Meridian or reloading keeps an acknowledged draft, offered in a
+tray. A recovered contact draft that meets a newer saved record is refused as a conflict, with **Keep my version**.
+Nexus owns the browser URL; see `../empyrean-nexus/docs/navigation-history.md`.
 
 ### Education, Interests and Interactions (0.7.0; 0.9.0 on aetest)
 

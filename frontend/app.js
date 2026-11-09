@@ -505,23 +505,45 @@ function leaveView() {
   document.body.classList.remove("tl-sheet-open");
   if (state.route.view === "people") state.people.scroll = scrollPos();
 }
-function showRoute(next, options) {
-  const { view, id } = next;
+async function showRoute(next, options = {}) {
+  const route = next.view === "interaction" ? await resolveInteractionRoute(next) : next;
+  if (options.isCurrent && !options.isCurrent()) return;
+  const { view, id } = route;
   // A profile opened from elsewhere starts on Profile; re-rendering the same one keeps its tab.
   if ((view === "person" || view === "entity") && (id !== state.person?.id || state.route.view !== view)) state.tab = "overview";
-  state.route = { view, id, kind: next.kind || null };
+  if (options.tab && !route.interaction) state.tab = options.tab;
+  state.route = { view, id, kind: route.kind || null, interaction: route.interaction || null, path: route.path || null };
   return render(options);
+}
+/** An Interaction is shown on the profile of its first participant still in the directory. */
+async function resolveInteractionRoute(route) {
+  const missing = { view: "not-found", id: null, path: `/interactions/${route.interaction}` };
+  let record;
+  try {
+    record = await api(`/interactions/${route.interaction}`);
+  } catch (error) {
+    if (/not found/i.test(error.message)) return missing;
+    throw error;
+  }
+  const who = record.participants.find((p) => !p.entity.deleted)?.entity;
+  if (!who) return missing;
+  return who.kind === "person" ? { view: "person", id: who.id, interaction: route.interaction } : { view: "entity", id: who.id, kind: who.kind, interaction: route.interaction };
 }
 function routeFromLocation() {
   return routeFromPath(location.pathname.replace(/^\/modules\/[^/]+/, "") || "/");
 }
 function routeFromPath(path) {
-  const person = path.match(/^\/people\/([0-9a-f-]{36})$/);
+  const clean = String(path || "/").replace(/\/+$/, "") || "/";
+  if (clean === "/") return { view: "dashboard", id: null };
+  const person = clean.match(/^\/people\/([0-9a-f-]{36})$/);
   if (person) return { view: "person", id: person[1] };
-  const entity = path.match(/^\/(organizations|groups)\/([0-9a-f-]{36})$/);
+  const entity = clean.match(/^\/(organizations|groups)\/([0-9a-f-]{36})$/);
   if (entity) return { view: "entity", id: entity[2], kind: entity[1] === "groups" ? "group" : "organization" };
-  const view = path.split("/")[1];
-  return { view: ["people", "organizations", "groups", "graph", "timeline", "import", "trash", "settings"].includes(view) ? view : "dashboard", id: null };
+  const interaction = clean.match(/^\/interactions\/([0-9a-f-]{36})$/);
+  if (interaction) return { view: "interaction", id: null, interaction: interaction[1] };
+  const view = clean.slice(1);
+  if (["people", "organizations", "groups", "graph", "timeline", "import", "trash", "settings"].includes(view)) return { view, id: null };
+  return { view: "not-found", id: null, path: clean };
 }
 const SKELETONS = {
   person: `<div class="page banded"><div class="band"><div class="wrap"><div class="profile-head"><span class="avatar xl skeleton"></span><div><div class="skeleton sk-title"></div><div class="skeleton sk-line" style="width:220px"></div></div></div><div class="sk-tabs"></div></div></div><div class="wrap body"><div class="skeleton sk-block"></div></div></div>`,
@@ -536,8 +558,9 @@ let lastView = null;
  * while a view is still loading, the late result is discarded rather than painted over the
  * newer screen. A skeleton appears only when loading takes long enough to notice.
  */
-async function render({ focus = true } = {}) {
+async function render({ focus = true, scroll = null } = {}) {
   const token = ++viewToken;
+  let outcome;
   renderNav();
   const sheet = $("#sheet");
   $(".page", sheet)?.classList.add("is-leaving");
@@ -548,14 +571,15 @@ async function render({ focus = true } = {}) {
     dashboard: viewDashboard, people: viewPeople, person: viewPerson, entity: viewEntity,
     organizations: (sheet, token) => viewEntities(sheet, token, "organization"),
     groups: (sheet, token) => viewEntities(sheet, token, "group"),
-    import: viewImport, trash: viewTrash, settings: viewSettings,
+    import: viewImport, trash: viewTrash, settings: viewSettings, "not-found": viewNotFound,
     ...(typeof viewGraph === "function" ? { graph: viewGraph } : {}),
     ...(typeof viewTimeline === "function" ? { timeline: viewTimeline } : {}),
   };
   try {
-    await (views[state.route.view] || viewDashboard)(sheet, token);
+    outcome = await (views[state.route.view] || viewDashboard)(sheet, token);
   } catch (error) {
-    if (token === viewToken)
+    if (token === viewToken && /not found/i.test(error.message)) outcome = viewNotFound(sheet);
+    else if (token === viewToken)
       sheet.innerHTML = `<div class="page"><h2 class="sr-only" data-heading tabindex="-1">${esc(t("This could not be loaded"))}</h2>${emptyState("alert", t("This could not be loaded"), error.message, `<button class="ae-btn" data-act="retry">${esc(t("Try again"))}</button><button class="ae-btn" data-act="go" data-view="dashboard">${esc(t("Back to Dashboard"))}</button>`)}</div>`;
   } finally {
     clearTimeout(skeleton);
@@ -567,6 +591,7 @@ async function render({ focus = true } = {}) {
   const from = lastView;
   const backToDirectory = state.route.view === "people" && from === "person";
   if (backToDirectory && state.people.scroll) for (const el of [sheet, document.scrollingElement, document.body]) if (el) el.scrollTop = state.people.scroll;
+  if (scroll) for (const el of [sheet, document.scrollingElement, document.body]) if (el) el.scrollTop = scroll;
   lastView = state.route.view;
   // Inside a view transition the browser animates the change; otherwise the page enters
   // in the direction of travel: deeper from the right, back from the left, sideways up.
@@ -579,6 +604,13 @@ async function render({ focus = true } = {}) {
   const cameFrom = backToDirectory && state.person && $(`#people-list [data-id="${CSS.escape(state.person.id)}"]`);
   if (cameFrom) cameFrom.focus({ preventScroll: true });
   else if (focus) $("[data-heading]", sheet)?.focus({ preventScroll: true });
+  return outcome === "not-found" ? outcome : undefined;
+}
+/** A deliberate outcome: the address stays as it is, and nothing unrelated is shown instead. */
+function viewNotFound(sheet) {
+  setTitle([{ label: t("Not found") }]);
+  sheet.innerHTML = `<div class="page"><h2 class="sr-only" data-heading tabindex="-1">${esc(t("This page could not be found"))}</h2>${emptyState("alert", t("This page could not be found"), t("The address may be wrong, or the record may have been removed."), `<button class="ae-btn" data-act="go" data-view="dashboard">${esc(t("Back to Dashboard"))}</button>`)}</div>`;
+  return "not-found";
 }
 const stale = (token) => token !== undefined && token !== viewToken;
 
@@ -1165,7 +1197,10 @@ let peopleToken = 0;
 /** Load the directory. Returns false when a newer request has started meanwhile. */
 async function loadPeople(more = false) {
   const p = state.people;
-  if (!more) p.limit = 100;
+  if (!more) {
+    p.limit = p.restoreLimit || 100;
+    delete p.restoreLimit;
+  }
   const token = ++peopleToken;
   const data = await api("/people" + query({ q: p.q, has: [...p.has].join(","), sort: p.sort, limit: p.limit }));
   if (token !== peopleToken) return false;
@@ -2425,6 +2460,7 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
     onPick(e);
     $('[data-act="picker-change"]', root)?.focus();
   };
+  root._pick = pick;
   root._unpick = () => {
     const hidden = $("[data-picked]", root);
     hidden.value = "";
@@ -3329,6 +3365,7 @@ function closePanel() {
     panel.snapshot = "";
     if (invoker?.isConnected) invoker.focus({ preventScroll: true });
     else $("[data-heading]")?.focus({ preventScroll: true });
+    navigationPanelClosed();
   });
   return panel.closing;
 }
@@ -3399,6 +3436,7 @@ async function savePanel(button) {
     else if (match && serverSection[match[1]]) showContactTab(serverSection[match[1]]);
     box.textContent = error.message;
     box.hidden = false;
+    if (/changed in another session/.test(error.message)) offerDraftOverride(box);
     const index = error instanceof RowError ? error.row : match ? +match[2] - 1 : -1;
     if (index >= 0) markInvalid(index);
     return false;
@@ -3408,6 +3446,7 @@ async function savePanel(button) {
     const saved = !panel.isDirty();
     updateContactStatus();
     if (saved) $("#panel-dirty").textContent = t("Saved");
+    if (saved && navigationHeld()) closePanel();
     if (focusTarget?.isConnected && !focusTarget.disabled) {
       focusTarget.focus({ preventScroll: true });
       if (selection) focusTarget.setSelectionRange?.(...selection);

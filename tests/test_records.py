@@ -432,7 +432,7 @@ def test_an_interaction_is_labelled_only_for_a_module_it_links_to(client):
         "/empyrean/v1/resources/resolve", headers=RES, json={"resource": ref, "requester": requester})  # fmt: skip
     allowed = ask("chronos")
     assert allowed.status_code == 200 and allowed.json()["label"] == "Lunch at Bistro"
-    assert allowed.json()["open_path"] == f"/people/{jana}"
+    assert allowed.json()["open_path"] == f"/interactions/{x['id']}"
     assert ask("lyra").status_code == 403
     client.delete(f"/api/interactions/{x['id']}")
     assert ask("chronos").status_code == 404

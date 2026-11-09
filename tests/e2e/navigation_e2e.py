@@ -145,15 +145,16 @@ def main():
 
         # Invalid routes fail gracefully.
         page.goto(f"{BASE}{mod}?nav=1&route={quote('/no-such-screen', safe='')}")
-        wait_route(page, mod, "/")
-        check("Unknown Meridian route falls back to the Dashboard and canonical address")
+        expect(frame.locator("#sheet")).to_contain_text("could not be found", timeout=15000)
+        wait_route(page, mod, "/no-such-screen")
+        check("Unknown Meridian route is an explicit not-found outcome and keeps its address")
         page.goto(f"{BASE}{mod}?nav=1&route=..%2Fetc")
         expect(page.locator("#content")).to_contain_text(
             re.compile("not found|Not found|doesn"), timeout=10000
         )
         check("Malformed route envelope is refused by Nexus (not-found view)")
 
-        # Unsaved side-panel edits are not dropped silently by Back (same module).
+        # Unsaved side-panel edits survive Back (same module); history is not rewritten.
         page.goto(f"{BASE}{mod}?nav=1&route={quote('/people', safe='')}")
         expect(frame.locator("#people-list")).to_be_visible(timeout=15000)
         frame.locator(f'#people-list [data-id="{pid}"]').click()
@@ -162,15 +163,21 @@ def main():
         expect(frame.locator("#panel-body")).to_be_visible(timeout=10000)
         field = frame.locator("#panel-body input.ae-input, #panel-body textarea").first
         field.fill(field.input_value() + " x")
+        typed = field.input_value()
         page.go_back()
-        # 0.6.0 unified contact editor: "Save your changes?" with Continue editing / Discard / Save.
-        expect(frame.locator("#dialog")).to_contain_text("Save your changes?", timeout=10000)
-        frame.locator('#dialog [data-act="close"]').first.click()  # Continue editing
-        wait_route(page, mod, f"/people/{pid}")
+        wait_route(page, mod, "/people")
+        expect(frame.locator("#panel-hold")).to_be_visible(timeout=10000)
         expect(frame.locator("#panel-body")).to_be_visible()
+        page.go_forward()
+        wait_route(page, mod, f"/people/{pid}")
+        expect(frame.locator("#panel-hold")).to_have_count(0, timeout=10000)
         check(
-            "Back with unsaved edits asks first; keeping them returns to the editor and its address"
+            "Back with unsaved edits keeps the editor; Forward returns to it without losing history",
+            field.input_value() == typed,
         )
+        frame.locator('[data-act="panel-close"]').first.click()
+        frame.locator("#contact-discard").click()
+        expect(frame.locator("#panel-body")).to_have_count(0, timeout=10000)
         # Phone width.
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto(f"{BASE}{mod}?nav=1&route={quote('/people', safe='')}")

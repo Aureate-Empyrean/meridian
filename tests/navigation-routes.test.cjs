@@ -20,8 +20,15 @@ for (const ref of ["/", "/people", "/organizations", "/groups", "/graph", "/time
   assert.strictEqual(round(ref), ref, ref);
 assert.deepStrictEqual({ ...R.parse(`/groups/${id}`) }, { view: "entity", id, kind: "group" });
 assert.deepStrictEqual({ ...R.parse(`/people/${id}`) }, { view: "person", id });
-// Unknown, malformed or over-specified references fall back safely.
-for (const ref of ["/nope", "/people/not-a-uuid", "/people/x/y", "", "/admin"]) assert.strictEqual(round(ref), ref === "/people/not-a-uuid" || ref === "/people/x/y" ? "/people" : "/", ref);
+assert.strictEqual(round(`/interactions/${id}`), `/interactions/${id}`);
+assert.deepStrictEqual({ ...R.parse(`/interactions/${id}`) }, { view: "interaction", id: null, interaction: id });
+// Unknown, malformed or over-specified references are an explicit outcome, and keep their address.
+for (const ref of ["/nope", "/people/not-a-uuid", "/people/x/y", "/admin", "/interactions/not-a-uuid"]) {
+  assert.strictEqual(R.parse(ref).view, "not-found", ref);
+  assert.strictEqual(round(ref), ref, ref);
+}
+assert.strictEqual(round(""), "/");
+assert.strictEqual(round("/people/"), "/people");
 // Queries and fragments are not part of Meridian routes.
 assert.strictEqual(round("/people?q=secret#x"), "/people");
 console.log("navigation route codec tests passed");
