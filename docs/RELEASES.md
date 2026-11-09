@@ -4,6 +4,32 @@
 
 Development from 0.3.1 (commit `1fb3f36`) to 0.10.0 was not committed as it happened. Intermediate versions have no history and none was reconstructed. Commits and tags carry their true creation date, which is after deployment.
 
+## 0.11.0
+
+| | |
+| --- | --- |
+| Tag | `v0.11.0` (annotated, tag object `ee90bb1d05efb240c0cebe33ae966019006d35b0`) |
+| Release commit | `733850f825e049b26b1fb892ed7ce40fadd33b6e`, created 2026-11-09 before any deployment |
+| Release image | `sha256:8ef0f8dfe7f2a3ef2a5b86ea3b93163c6d1513f6b6c4614cf57fa158da3c9f32`, built from a clean clone of this commit |
+| Image built | 2026-11-09T18:14:48.597752982Z |
+| Deployed | **Not deployed to Exodus.** This image runs on aetest |
+| CI | This repository has no GitHub Actions workflow. The equivalent checks ran locally from a clean clone |
+
+### What has been demonstrated
+
+Checked on 2026-11-09. Evidence is in `VALIDATION_P1_NAVIGATION_AETEST_2026-11-09.md` at the workspace root.
+
+- All 32 files under the image's `/app/backend` and `/app/frontend` are byte-identical to this commit.
+- Against the working-tree build first validated on aetest, those files match except for line endings: 12 byte-identical and 20 differing only in line endings.
+- This exact image was then installed on aetest, and the universal navigation journeys passed against it in Chromium, WebKit and Firefox on Linux.
+- The unit suite passes on the clean clone: 187 passed.
+
+### What has not been demonstrated
+
+- The build is **not reproducible to the digest**. Rebuilds of unchanged source gave different image IDs.
+- Physical mouse buttons, native keyboard shortcuts, Safari and real phones have not been checked.
+- It has not run in production.
+
 ## 0.10.0
 
 | | |
