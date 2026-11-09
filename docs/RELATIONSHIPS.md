@@ -268,10 +268,123 @@ What this means:
 
 ---
 
+## 9a. Kinship, siblings and relationship transitions (0.5.0)
+
+Implemented in 0.5.0 (schema 6) from the owner-approved requirements in
+[`architecture/modules/meridian.md`](../../architecture/modules/meridian.md#approved-ux-improvements-2026-11-07).
+Tests: `tests/test_ux.py` (backend), `tests/ux.test.cjs` (helpers), `tests/e2e/ux_e2e.cjs` (browser).
+
+### Kinship origin
+
+`relationships.kinship` records how a parent or sibling relationship came about, on the record
+itself, so there is still one `parent` type and one `sibling` type and no duplicate types:
+
+| Type | Values | Shown as |
+| --- | --- | --- |
+| `parent` | `biological`, `adoptive`, `step` | "Parent of" / "Child of"; *adoptive* or *step-parent* in the row detail |
+| `sibling` | `biological_full`, `biological_half`, `biological` (full or half not known), `adoptive`, `step` | "Sibling of"; *full siblings*, *half-siblings*, *siblings through adoption*... in the detail |
+
+- `NULL` means **not recorded**. Every record made before 0.5.0 keeps `NULL`; nothing is
+  reinterpreted as biological or adoptive. The form shows it as "Not specified".
+- Any other type refuses a kinship value (422).
+- A new parent relationship starts with **Biological** selected in the form (visible and
+  changeable); a new sibling relationship starts with **Not specified**.
+- Biological and adoptive records are separate records and may coexist, even for the same pair.
+  The duplicate check (`/api/similar-relationships`, now with `kinship`) treats records with
+  different known kinship as different; an unrecorded kinship may be either, so it still counts
+  as similar.
+- Kinship is permanent: a new relationship never ends a `parent`, `sibling`, `grandparent`,
+  `aunt_uncle`, `cousin` or `relative` record (`relations.PERMANENT`). Three operations stay
+  distinct (owner decision, 2026-11-07): **ending** a temporal relationship (an end date, kept
+  as history); **correcting** a wrong record (edit it, or Remove it); and a change of **contact or
+  circumstances** (no contact, estrangement, conflict), which is not represented by ending
+  kinship and has no data model in 0.5.0. "End it" remains available on family records; for
+  them its notice and the Remove confirmation say that a family tie does not end through
+  distance or conflict and that a wrong record should be corrected or removed.
+
+### Start date suggestion (parent/child)
+
+`GET /api/relationship-suggestion?subject_id&object_id&type&kinship` returns the child's birth
+date (the object of `parent of`, whichever side the form was opened from) as `valid_from`, at
+its stored precision (`1990`, `1990-05`, `1990-05-17`). Nothing is returned for adoptive or step
+parenthood (adoption does not begin at birth), for a birthday without a year, or for other types.
+An end date is never suggested. The form fills **Since** only while it is empty or still shows
+the previous untouched suggestion, explains where the date came from, and withdraws an untouched
+suggestion when the kinship becomes adoptive; a date the user typed is never replaced
+(`MeridianUX.takeSuggestion`). New records only.
+
+### Sibling suggestions
+
+After a parent relationship is saved, the form asks
+`GET /api/sibling-suggestions?relationship=<id>`. For the child of that record it compares the
+recorded parents with those of every other child of the same parent (step-parent links are
+ignored) — `relations.classify`:
+
+| Recorded parents | Suggestion |
+| --- | --- |
+| Two shared, both explicitly biological for both children | `biological_full` |
+| One shared biological parent, and the other biological parents are confirmed different (two confirmed biological parents each, or an adoptive link) | `biological_half` |
+| One shared biological parent, the other parent unknown or not confirmed | `biological` (uncertain; never assumed half) |
+| A shared parent who is adoptive for at least one child | `adoptive` (never step, never half) |
+| A shared parent whose kinship is not recorded | candidate without classification |
+
+Existing sibling records between the pair decide the action: none → *create*; the same kinship
+→ nothing; an unrecorded or vaguer biological record (or a contradicted full/half) → *update*
+that record for confirmation; only adoptive or step records → *create* a biological record beside
+them. A recorded classification is never downgraded to a vaguer one.
+
+Nothing is written by the suggestion. One dialog lists every candidate with *Yes, they are
+siblings*, *Yes, they are half-siblings*, *full or half not known*, *through adoption*, *no
+details* and *No, do not create a sibling relationship* (*Keep it as recorded* for updates),
+preselecting the evidence. `POST /api/sibling-suggestions/apply` saves the answers in one
+transaction: a pair that meanwhile got the same record is skipped, a changed one is a 409 and
+nothing is saved. Updates change only `kinship`; dates, notes, context and provenance stay.
+Created records carry the source *"Confirmed by you from the parents recorded in Meridian"*.
+
+### Ongoing relationships when another begins
+
+Before a **new** relationship is saved, the form asks
+`GET /api/active-relationships?subject_id&object_id&type`: relationships between the two in
+either direction that have no end date and are not marked `former` (`unknown` counts as
+possibly ongoing; `former` without a date has ended at an unknown time). Excluded: permanent
+kinship, the same type (the duplicate check's question), and every case where the new type is
+itself kinship. Each candidate carries `suggest_end`, true only within the partner category
+(dating → engaged → married), so friends, colleagues, roommates and the like start unselected.
+
+The dialog offers **End selected and save** (with an editable transition date, defaulting to the
+new Since, or empty for unknown), **Keep all and save**, and **Cancel** (nothing changes and the
+form stays open). Ending is part of the same request:
+`POST /api/relationships` with `end_relationships: [{id, valid_until}]`. In one transaction
+Meridian writes the new record, then for each chosen record checks that it is between the same
+two, not kinship, still ongoing (else 409), and that the end is not before its start (else 422),
+and sets `valid_until` (when given) and `state = former`. Any refusal or failure rolls back the
+new record and every ending. Editing (`PUT`) refuses `end_relationships`. Earlier records keep
+their dates, notes, context and provenance; the Timeline shows their "Ended" entry (or, without
+a date, the undated "ended, date unknown" entry).
+
+The graph (`graphData` in `app.js`) hides, under the default **All**, an ended relationship edge
+when the same pair has a current edge of the same category, so the current state reads clearly;
+**Ended** still shows it, the pair's detail panel lists every record, and concurrent current
+relationships all stay.
+
+### Schema 6 and going back
+
+Schema 6 adds `relationships.kinship`, `entities.name_given_first`, `name_family_first` and
+`display_family_first` (derived name orders, see `docs/DESIGN.md` § 24), and stores
+`people.sort = family` in `settings` on installations that already hold people. Existing rows
+are not changed otherwise. Without a backup, `db.SCHEMA_6_REVERSAL` returns a database to schema
+5 for 0.4.x (SQLite 3.35+; kinship and preferences recorded since are lost). The normal path is
+the Nexus pre-update backup. A 0.5.0 backup is not restorable by 0.4.x.
+
+---
+
 ## 10. Known limits
 
-- **Cross-module references:** Organizations and Groups are not yet resolvable for other
-  modules (the manifest still declares only `person`).
+- **Cross-module references:** since 0.4.0 People, Organizations and Groups are resolvable
+  for modules Nexus grants a resolve scope (Argus; since 0.6.0 Chronos and Mnemosyne for People).
+  Meridian's own outgoing references are still only representative images; since 0.6.0 it resolves
+  Chronos events and Mnemosyne notes, tasks, projects and collections that link to its entities, to list
+  them under "Linked from other modules".
 - **Membership limits:** memberships have one role; Group↔Group membership is not
   supported; and there is no merge of duplicate entities.
 - **Provenance scope:** provenance rows exist for relationships and memberships. Milestone

@@ -90,6 +90,20 @@ BUILTIN = dict(
         _t("partner_org", "structure", "partners with", None, (ORG,), (ORG,)),
     ]
 )
+# Kinship origin (schema 6): how a parent or sibling relationship came about, stored on the
+# record itself so "sibling of" stays one type. NULL means "not recorded" (every record made
+# before 0.5.0): it is never read as biological. Biological and adoptive kinship are separate
+# records and may coexist; adoption never replaces a biological record.
+KINSHIP = {
+    "parent": ("biological", "adoptive", "step"),
+    "sibling": ("biological_full", "biological_half", "biological", "adoptive", "step"),
+}
+# Kinship that a new relationship never ends: it does not stop through death, estrangement or
+# lost contact (conflict is a separate matter, recorded separately).
+PERMANENT = {"parent", "sibling", "grandparent", "aunt_uncle", "cousin", "relative"}
+# Categories in which a new relationship usually takes over from an ongoing one (dating, then
+# engaged, then married); only these are offered for ending by default.
+SUCCESSIVE = {"partner"}
 # Edges derived from other authoritative records, described like types for the graph.
 MEMBERSHIP = {"key": "membership", "category": "membership", "label": "member of",
               "inverse": "has member", "symmetric": False}  # fmt: skip
@@ -188,9 +202,11 @@ def sources_of(conn, kind, rid) -> list:
     ]  # fmt: skip
 
 
-def similar(conn, subject, object_, type_key, exclude=None, symmetric=False) -> list:
+def similar(conn, subject, object_, type_key, exclude=None, symmetric=False, kinship=None) -> list:
     """Existing relationships of the same type between the same two entities (either
-    direction for a symmetric type). Similar is not identical: the caller asks the user."""
+    direction for a symmetric type). Similar is not identical: the caller asks the user.
+    Records with different known kinship (a biological and an adoptive parent record) are
+    not similar; an unrecorded kinship may be either, so it is."""
     pairs = [(subject, object_)] + ([(object_, subject)] if symmetric else [])
     found = []
     for a, b in pairs:
@@ -198,7 +214,15 @@ def similar(conn, subject, object_, type_key, exclude=None, symmetric=False) -> 
             "SELECT * FROM relationships WHERE subject_id=? AND object_id=? AND type=? AND id IS NOT ?",
             (a, b, type_key, exclude),
         ).fetchall()
-    return [dict(r) for r in found]
+    return [dict(r) for r in found if not kinship or not r["kinship"] or r["kinship"] == kinship]
+
+
+def check_kinship(type_key, kinship):
+    if kinship is None:
+        return None
+    if kinship not in KINSHIP.get(type_key, ()):
+        raise Invalid("Kinship applies to parent and sibling relationships only")
+    return kinship
 
 
 def save_relationship(conn, body: dict, rid=None, allow_similar=False) -> str:
@@ -206,6 +230,7 @@ def save_relationship(conn, body: dict, rid=None, allow_similar=False) -> str:
     t = known.get(body["type"])
     if not t:
         raise Invalid("Choose a relationship type")
+    kinship = check_kinship(t["key"], body.get("kinship"))
     subject, object_ = _entity(conn, body["subject_id"]), _entity(conn, body["object_id"])
     if not subject or not object_ or subject["deleted_at"] or object_["deleted_at"]:
         raise Invalid("Both sides must be people, organizations or groups in Meridian")
@@ -215,12 +240,12 @@ def save_relationship(conn, body: dict, rid=None, allow_similar=False) -> str:
         raise Invalid(f"“{t['label']}” does not fit a {subject['kind']} and a {object_['kind']}")
     _ordered(body.get("valid_from"), body.get("valid_until"))
     if not allow_similar:
-        twins = similar(conn, subject["id"], object_["id"], t["key"], rid, t["symmetric"])
+        twins = similar(conn, subject["id"], object_["id"], t["key"], rid, t["symmetric"], kinship)
         if twins:
             raise Similar(twins)
     now = iso_now()
     row = {
-        "subject_id": subject["id"], "object_id": object_["id"], "type": t["key"],
+        "subject_id": subject["id"], "object_id": object_["id"], "type": t["key"], "kinship": kinship,
         "context": body.get("context", ""), "state": _state(body.get("state", "current"), body.get("valid_until")),
         "valid_from": body.get("valid_from"), "valid_until": body.get("valid_until"),
         "confidence": body.get("confidence"), "note": body.get("note", ""), "updated_at": now,
@@ -295,9 +320,288 @@ def relationship_record(conn, row, perspective=None, known=None) -> dict:
         "other": _side(conn, other) if perspective else None,
         "context": row["context"], "state": row["state"], "valid_from": row["valid_from"],
         "valid_until": row["valid_until"], "confidence": row["confidence"], "note": row["note"],
+        "kinship": row["kinship"], "permanent": t["key"] in PERMANENT,
         "sources": sources_of(conn, "relationship", row["id"]),
         "created_at": row["created_at"], "updated_at": row["updated_at"],
     }  # fmt: skip
+
+
+def date_suggestion(conn, subject, object_, type_key, kinship=None) -> dict:
+    """A start date to suggest for a new relationship: for biological (or not yet specified)
+    parenthood, the child's birth date at the precision it is known. Adoptive and step
+    parenthood do not begin at birth, so nothing is suggested for them; nothing is ever
+    suggested as an end date."""
+    if type_key != "parent" or kinship in ("adoptive", "step"):
+        return {}
+    child = _entity(conn, object_)
+    if not child or child["kind"] != PER or child["deleted_at"]:
+        return {}
+    row = conn.execute(
+        "SELECT date, approximate FROM personal_dates WHERE entity_id=? AND kind='birth' "
+        "AND date IS NOT NULL AND valid_until IS NULL ORDER BY position LIMIT 1",
+        (object_,),
+    ).fetchone()
+    if not row or row["date"].startswith("--"):
+        return {}  # a birthday without a year cannot be a start date
+    return {"valid_from": row["date"], "approximate": bool(row["approximate"]),
+            "reason": "birth", "child": _side(conn, object_)}  # fmt: skip
+
+
+# ── Ongoing relationships when another begins ──────────────────────────
+
+
+def ongoing(row) -> bool:
+    """No end date and not marked ended: possibly still going on. A record marked former
+    without a date has ended at an unknown time, so it is not a candidate."""
+    return not row["valid_until"] and row["state"] != "former"
+
+
+def active_between(conn, subject, object_, type_key, exclude=None) -> list:
+    """Relationships between the two entities, in either direction, that may still be going
+    on and that a new `type_key` relationship could take over from. Permanent kinship is
+    never offered, nor is the same type (that is the duplicate check's question). Each comes
+    with `suggest_end`: true only where one usually follows the other (partners)."""
+    known = types(conn)
+    new = known.get(type_key)
+    if not new or new["key"] in PERMANENT:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM relationships WHERE ((subject_id=? AND object_id=?) OR (subject_id=? AND object_id=?)) "
+        "AND type<>? AND id IS NOT ? ORDER BY coalesce(valid_from,''), created_at",
+        (subject, object_, object_, subject, new["key"], exclude),
+    ).fetchall()
+    out = []
+    for r in rows:
+        if r["type"] in PERMANENT or not ongoing(r):
+            continue
+        record = relationship_record(conn, r, subject, known)
+        record["suggest_end"] = (
+            record["category"] == new["category"] and new["category"] in SUCCESSIVE
+        )
+        out.append(record)
+    return out
+
+
+def end_for_transition(conn, subject, object_, items) -> list:
+    """End the chosen ongoing relationships because a new one begins: set the end date when
+    it is known, mark them former either way. Runs inside the caller's transaction, after the
+    new record is written, so a refusal here rolls back the whole transition."""
+    ended = []
+    for item in items:
+        row = conn.execute("SELECT * FROM relationships WHERE id=?", (item["id"],)).fetchone()
+        if not row or {row["subject_id"], row["object_id"]} != {subject, object_}:
+            raise Invalid("A relationship to end is not between these two")
+        if row["type"] in PERMANENT:
+            raise Invalid("Kinship does not end because another relationship begins")
+        if not ongoing(row):
+            raise Conflict("That relationship has changed meanwhile; review it and try again")
+        until = item.get("valid_until")
+        _ordered(row["valid_from"], until)
+        conn.execute(
+            "UPDATE relationships SET valid_until=?, state='former', updated_at=? WHERE id=?",
+            (until, iso_now(), row["id"]),
+        )
+        ended.append(row["id"])
+    return ended
+
+
+class Conflict(Exception):
+    """The data changed between what the user saw and what they confirmed."""
+
+
+# ── Siblings from shared parents ───────────────────────────────────────
+
+KINSHIP_RANK = {"biological": 1, "biological_half": 2, "biological_full": 2}
+
+
+def parents_of(conn, child) -> dict:
+    """{parent id: set of kinship values} for a child's recorded parents (live entities).
+    Step-parent links are left out: they say nothing about siblinghood by themselves."""
+    out = {}
+    for r in conn.execute(
+        "SELECT r.subject_id, r.kinship FROM relationships r JOIN entities e ON e.id=r.subject_id "
+        "WHERE r.type='parent' AND r.object_id=? AND e.deleted_at IS NULL",
+        (child,),
+    ):
+        if r["kinship"] != "step":
+            out.setdefault(r["subject_id"], set()).add(r["kinship"])
+    return out
+
+
+def _not_biological(parent, links: dict) -> bool:
+    """Certainly not this child's biological parent: an adoptive link and no biological one,
+    or the child already has two other confirmed biological parents."""
+    kinds = links.get(parent, set())
+    if "biological" in kinds:
+        return False
+    if "adoptive" in kinds:
+        return True
+    bio = {p for p, k in links.items() if "biological" in k}
+    return len(bio) >= 2 and parent not in bio
+
+
+def classify(links_a: dict, links_b: dict):
+    """What recorded parents say about two people: None when they share no parent, else
+    (kinship or None, reason). Only explicitly biological links count as biological; an
+    unknown second parent is uncertainty, never a half-sibling conclusion."""
+    shared = set(links_a) & set(links_b)
+    if not shared:
+        return None
+    bio_shared = {p for p in shared if "biological" in links_a[p] and "biological" in links_b[p]}
+    if len(bio_shared) >= 2:
+        return "biological_full", "two_biological"
+    if len(bio_shared) == 1:
+        others_a = {p for p, k in links_a.items() if "biological" in k} - bio_shared
+        others_b = {p for p, k in links_b.items() if "biological" in k} - bio_shared
+        if any(_not_biological(p, links_b) for p in others_a) or any(
+            _not_biological(p, links_a) for p in others_b
+        ):
+            return "biological_half", "one_biological_other_different"
+        return "biological", "one_biological_other_unknown"
+    if any("adoptive" in links_a[p] or "adoptive" in links_b[p] for p in shared):
+        return "adoptive", "adoptive"
+    return None, "unspecified"
+
+
+def _brief(conn, eid):
+    r = conn.execute("SELECT id, kind, display_name FROM entities WHERE id=?", (eid,)).fetchone()
+    return {"id": r["id"], "kind": r["kind"], "display_name": r["display_name"]}
+
+
+def sibling_records(conn, a, b) -> list:
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM relationships WHERE type='sibling' AND "
+            "((subject_id=? AND object_id=?) OR (subject_id=? AND object_id=?)) ORDER BY created_at",
+            (a, b, b, a),
+        )
+    ]
+
+
+def _proposal(existing: list, kinship):
+    """('create', None) or ('update', record) or None for a pair already recorded as well
+    as the evidence allows. Specific known kinship is never downgraded to a vaguer one."""
+    kinds = [r["kinship"] for r in existing]
+    if kinship in kinds and kinship is not None:
+        return None
+    if kinship is None:
+        return None if existing else ("create", None)
+    if not existing:
+        return "create", None
+    if kinship == "adoptive":
+        target = next((r for r in existing if r["kinship"] in (None, "step")), None)
+        return ("update", target) if target else None
+    # A biological classification: refine an unrecorded or vaguer biological record, or
+    # correct full/half when the parents now confirm the other; otherwise add it beside an
+    # adoptive or step record (both kinds of siblinghood can be true at once).
+    bio = [r for r in existing if r["kinship"] in KINSHIP_RANK]
+    if bio:
+        target = bio[0]
+        if KINSHIP_RANK[kinship] < KINSHIP_RANK[target["kinship"]]:
+            return None
+        return "update", target
+    blank = next((r for r in existing if r["kinship"] is None), None)
+    if blank:
+        return "update", blank
+    return "create", None
+
+
+def sibling_suggestions(conn, rid) -> dict:
+    """Possible siblings of the child in parent relationship `rid`, from the parents recorded
+    so far. A suggestion only: nothing is written here."""
+    row = conn.execute("SELECT * FROM relationships WHERE id=?", (rid,)).fetchone()
+    if not row:
+        raise LookupError
+    if row["type"] != "parent" or row["kinship"] == "step":
+        return {"child": None, "suggestions": []}
+    parent, child = row["subject_id"], row["object_id"]
+    people = {
+        r["id"]: r
+        for r in conn.execute(
+            "SELECT id, kind, deleted_at FROM entities WHERE id IN (?,?)", (parent, child)
+        )
+    }
+    if any(people.get(x) is None or people[x]["deleted_at"] or people[x]["kind"] != PER
+           for x in (parent, child)):  # fmt: skip
+        return {"child": None, "suggestions": []}
+    mine = parents_of(conn, child)
+    others = [
+        r["object_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT r.object_id FROM relationships r JOIN entities e ON e.id=r.object_id "
+            "WHERE r.type='parent' AND r.subject_id=? AND r.object_id<>? AND e.deleted_at IS NULL "
+            "AND e.kind='person' AND (r.kinship IS NULL OR r.kinship<>'step')",
+            (parent, child),
+        )
+    ]
+    out = []
+    for other in others:
+        theirs = parents_of(conn, other)
+        found = classify(mine, theirs)
+        if not found:
+            continue
+        kinship, reason = found
+        existing = sibling_records(conn, child, other)
+        decision = _proposal(existing, kinship)
+        if not decision:
+            continue
+        action, record = decision
+        shared = sorted(set(mine) & set(theirs))
+        out.append({
+            "a": _brief(conn, child), "b": _brief(conn, other), "action": action,
+            "kinship": kinship, "reason": reason,
+            "record_id": record["id"] if record else None,
+            "current_kinship": record["kinship"] if record else None,
+            "shared_parents": [
+                {**_brief(conn, p), "a": sorted(k or "" for k in mine[p]),
+                 "b": sorted(k or "" for k in theirs[p])}
+                for p in shared
+            ],
+        })  # fmt: skip
+    return {"child": _brief(conn, child), "suggestions": out}
+
+
+CONFIRMED_SOURCE = {
+    "kind": "other",
+    "label": "Confirmed by you from the parents recorded in Meridian",
+}
+
+
+def apply_siblings(conn, items) -> dict:
+    """Create or update the sibling records the user confirmed, all or nothing. A pair that
+    meanwhile got the same record is skipped rather than duplicated."""
+    created = updated = skipped = 0
+    for item in items:
+        a, b, kinship = item["a"], item["b"], check_kinship("sibling", item.get("kinship"))
+        existing = sibling_records(conn, a, b)
+        if item.get("record_id"):
+            target = next((r for r in existing if r["id"] == item["record_id"]), None)
+            if not target:
+                raise Conflict("A sibling relationship changed meanwhile; review it and try again")
+            if target["kinship"] == kinship:
+                skipped += 1
+                continue
+            conn.execute(
+                "UPDATE relationships SET kinship=?, updated_at=? WHERE id=?",
+                (kinship, iso_now(), target["id"]),
+            )
+            updated += 1
+            continue
+        if any(r["kinship"] == kinship or kinship is None for r in existing):
+            skipped += 1
+            continue
+        if any(r["kinship"] is None for r in existing):
+            # A sibling record appeared meanwhile; it may be this one, so ask again.
+            raise Conflict("A sibling relationship changed meanwhile; review it and try again")
+        save_relationship(
+            conn,
+            {"subject_id": a, "object_id": b, "type": "sibling", "kinship": kinship,
+             "sources": [CONFIRMED_SOURCE]},
+            allow_similar=True,
+        )  # fmt: skip
+        created += 1
+    return {"created": created, "updated": updated, "skipped": skipped}
 
 
 def membership_record(conn, row, perspective=None) -> dict:

@@ -200,15 +200,21 @@ readers.
     a bottom sheet on phones) for that section.
   - Section chips at the top switch sections.
   - The page behind is `inert`.
-- **Unsaved changes:**
-  - The panel snapshots its form when it opens; the dirty state reads "Unsaved changes".
-  - Escape, Cancel, the close button, switching sections and navigating away all ask
-    before discarding.
-  - Answering "Cancel" in that dialog keeps editing.
-- **Saving:**
-  - Ctrl/⌘+Enter or Save. An untouched panel just closes and sends no request.
-  - On success: "Saved" on the button, the profile refreshes, the panel closes, the
-    section flashes copper once and a toast confirms.
+- **Unsaved changes (contact tabs):**
+  - All tabs share one session. Switching sections preserves raw input, including incomplete
+    values, without saving or prompting. The footer shows "Unsaved changes".
+  - Escape, the scrim, the close button and navigation offer Save, Discard changes and
+    Continue editing. Failed saves leave the editor open with its draft intact.
+  - Cancel closes and discards only edits since the last successful save.
+- **Saving (contact tabs):**
+  - Ctrl/Command+Enter or Save persists all changed sections in one transaction. Save is disabled
+    when unchanged or saving; editing and closing are blocked while the request is pending.
+  - On success the profile refreshes, the panel stays on its current section and "Saved"
+    appears quietly in the footer. Returned record IDs establish the new draft baseline.
+  - A content revision checked under the database write lock rejects stale drafts with 409.
+    The user keeps their draft and can reopen the contact to review the latest data; there
+    is no automatic merge. Older API clients may omit the revision for compatibility.
+  - Relationship, membership and event editors retain their existing save/close behavior.
 - **Errors:**
   - The server message names the row ("Contact 3: Enter an email address like …").
   - It appears in the panel footer, and that row is outlined and scrolled into view.
@@ -339,7 +345,9 @@ merge never reads as copper "new".
   - Title "People" and a live count ("5 people"; "2 of 5 people" while searching or
     filtering).
   - One search field (`#people-q`, `/` focuses it).
-  - Sort as a segmented control: Name, Last updated, Date added.
+  - Sort as a segmented control: Name, Last updated, Date added. Name follows the sorting
+    preference in Settings → People (§ 17, § 24), sorted on the server before pagination
+    with Slovak collation; names are written as the display preference sets.
   - View as a segmented control: List or Cards.
   - Filter chips "Only with": Phone, Email, Birthday, Work, Imported.
   - The toolbar search is hidden on this screen, so there is never a second search.
@@ -480,10 +488,15 @@ what it does ("Delete permanently", not "OK").
 
 ## 17. Settings
 
-Only settings that exist. There are no toggles, because Meridian has no options to toggle
-yet.
+Only settings that exist, in this order:
 - **You (@me):** the person with Open profile, Change and Clear; or "No one is marked as
-  you yet" with Choose a person and Create my profile.
+  you yet" with Choose a person and Create my profile. The description mentions that @me
+  finds this person in any person search.
+- **People** (0.5.0): two independent segmented controls in a `vrow` list — *Sort by*
+  (First name → Last name / Last name → First name) and *Show names as* (First name Last
+  name / Last name, First name) — and one hint on Slovak order and names stored as one piece
+  of text. A choice saves at once (toast "Saved"); on phones each control spans the width.
+  See § 24.
 - **Import history:** one row per import (file, counts, date). It opens a dialog listing
   each contact's outcome (New, Merged or Skipped, plus "in Trash" or "deleted since"),
   with links to the people still there.
@@ -571,6 +584,12 @@ Screenshots: `docs/screenshots/stage-b/` (this stage), `docs/screenshots/stage-a
   - How sure (Not stated, Sure, Fairly sure, Uncertain, Don't know);
   - sources (kind, details, learned);
   - note.
+- **0.5.0 additions** (§ 24): kinship (*Parenthood* / *Kind of siblings*) under the
+  target for parent and sibling phrases; the child's birth date suggested as Since with an
+  explanation; `@me` and a *Me* badge in the entity picker; the "Still going on?" dialog
+  before a new relationship between two who have an ongoing one; the "Possible siblings"
+  dialog after a parent relationship is saved. The phrase selector keeps the native
+  `<select>` with readable category headings.
 - **Similar records:** before saving, a similar existing relationship appears as an amber
   notice listing it, with "Save anyway" and "Edit the existing one". Nothing is merged.
 - **Footer of an existing record:** "End it" sets Ended and this month as the end, for the
@@ -804,7 +823,10 @@ docs/TIMELINE.md.
 
 ### Entries
 Each entry is a row: date (short, within its year: "17 May", "May", or nothing for year-only),
-mark, tag, sentence, and a quiet second line.
+mark, tag, sentence, and a quiet second line. Entries on the same exact date and precision
+share one date label (0.5.0): the following rows sit 4 px closer and a `--m-line-strong`
+hairline in the date column joins them to the label; each remains its own row. Partial
+dates are never merged (`TIMELINE.md` § 10a).
 
 | Kind | Mark | Hue |
 | --- | --- | --- |
@@ -847,3 +869,73 @@ mark, tag, sentence, and a quiet second line.
   - implying that an old, ongoing relationship ended;
   - colour-only kinds;
   - animating the idle timeline.
+
+---
+
+## 24. Kinship, transitions, name order and `@me` (0.5.0)
+
+Behaviour and data: `docs/RELATIONSHIPS.md` § 9a. These additions reuse the side panel, the
+modal `ae-dialog` and the segmented control; nothing else in Meridian changed shape.
+
+### Native selects in the dark theme
+The shared foundation coloured `<option>` but not `<optgroup>`, so Chromium on Windows drew
+category headings (Family, Partners, Friends and social) in light text on the list's default
+white. Meridian's `style.css` now gives every `.ae-select` `color-scheme: dark`, and options
+and headings the overlay surface `--m-overlay`: headings `--m-text-2` at weight 600 (9.1:1),
+options `--m-text` (13.5:1), the checked option `--m-raised-hover`, disabled `--m-text-3`;
+`forced-colors` falls back to `Canvas`/`CanvasText`. The control stays native: keyboard,
+type-ahead and screen readers behave as before. Meridian has only a dark theme, so there is no
+light variant to check.
+
+### Relationship editor
+- **Kinship** appears under *Of whom* only for parent and sibling phrases: *Parenthood*
+  (Biological, Adoptive, Step-parent, Not specified) or *Kind of siblings* (Full siblings,
+  Half-siblings, Biological — full or half not known, Through adoption, Step-siblings, Not
+  specified), with one hint line where it helps.
+- **Suggested Since:** the birth date fills Since and a copper hint under the period says
+  where it came from ("Since is set to Vzorko Kvázimenný’s birth date. Change it if the
+  relationship began at another time."). It never touches Until or a date the user typed.
+- **Sentences use natural names** ("Ukážka Kvázimenná is parent of Vzorko Kvázimenný") even when
+  lists show "Kvázimenný, Vzorko".
+- **Rows** keep the ordinary wording ("Sibling of", "Child of") and add the kinship to the quiet
+  line: *half-siblings*, *siblings through adoption*, *adoptive*, *step-parent* (biological
+  parenthood is the unremarked default).
+
+### "Still going on?"
+Wide dialog over the panel: one sentence naming both people and the new phrase; one bordered
+row per ongoing relationship (checkbox, full sentence, "Since 2022 · no end date"); *Ended on*
+as the usual day/month/year widget (shown only while something is selected) with "Leave it empty
+if you don’t know"; buttons Cancel, Keep all and save, End selected and save (primary, disabled
+until something is selected). Only partner relationships start selected.
+
+### "Possible siblings"
+Wide dialog after the panel closes: one sentence ("The parents recorded for … suggest …
+Nothing is saved until you confirm."), then one bordered row per candidate with both avatars
+and names, a plain-language reason ("Both have Ukážka Kvázimenná as a biological parent. Whether
+they share their other parent is not recorded."), and a select of answers with the evidence
+preselected. Buttons: Not now, Save answers.
+
+### Name order
+- Lists, search results and pickers show `display_family_first` ("Kvázimenný, Vzorko") when the
+  display preference is last-name-first; headings, sentences, Graph and Timeline keep the
+  natural form.
+- Sorting is server-side with the `meridian_name` collation (Slovak: ä, č, ô, š, ž and ch are
+  letters of their own; other accents break ties). Prefixes and suffixes do not sort; a name
+  stored as one piece of text sorts and shows as written.
+
+### `@me` in pickers
+Typing `@me` (or `@`, `@m`) shows the self Person first with a small *Me* badge; "me" puts
+them first among ordinary matches. With no one marked: "No one is marked as you yet. Choose who
+you are in Settings → You." A picker that cannot take a Person (Groups) or excludes the self
+Person (their own profile) says so instead of showing nothing.
+
+---
+
+## 25. Linked from other modules (0.6.0)
+
+A profile section, shown only when something links here: one `vrow` per item, labelled by its module and kind ("Event
+in Chronos", "Note in Mnemosyne") with the module's icon, the owner's current title as the value, and an "Open
+<module>" action when that module is installed. An item that cannot be resolved stays listed as "Something linked
+here" with a quiet reason ("deleted there", "not available right now"). One hint line says the items belong to their
+modules. It is read when the profile opens (`GET /api/entities/{id}/linked-from`); Meridian stores none of it.
+

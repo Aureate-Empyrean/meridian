@@ -22,15 +22,25 @@ const TL_CATEGORY = {
   employment: { label: "Work", noun: "Work" },
   life: { label: "Life dates", noun: "Life date" },
   event: { label: "Events", noun: "Event" },
+  education: { label: "Education", noun: "Education" },
+  interest: { label: "Interests and preferences", noun: "Interest or preference" },
+  interaction: { label: "Interactions", noun: "Interaction" },
 };
+/* Records with a period: Began and Ended entries, and the "still in effect" filter. */
+const TL_PERIODS = ["relationship", "membership", "employment", "education", "interest"];
+const IX_TYPES = { meeting: "Meeting", call: "Call", conversation: "Conversation", messages: "Messages", activity: "Activity together", visit: "Visit", introduction: "Introduction", gift: "Gift", conflict: "Conflict", help: "Help or favor", other: "Other" };
+const INTEREST_PHRASE = { favorite: "has a favorite:", loves: "loves", likes: "likes", preferred: "prefers", neutral: "is neutral about", dislikes: "dislikes", avoids: "avoids", hates: "hates" };
 const TL_COUNT = {
   relationship: ["{count} relationship change", "{count} relationship changes"],
   membership: ["{count} membership change", "{count} membership changes"],
   employment: ["{count} work change", "{count} work changes"],
   life: ["{count} life date", "{count} life dates"],
   event: ["{count} event", "{count} events"],
+  education: ["{count} education change", "{count} education changes"],
+  interest: ["{count} interest change", "{count} interest changes"],
+  interaction: ["{count} interaction", "{count} interactions"],
 };
-const TL_HUE = { membership: "#b3c39e", employment: "#9aaec6", life: "#ecdccd", event: "#c48663" };
+const TL_HUE = { membership: "#b3c39e", employment: "#9aaec6", life: "#ecdccd", event: "#c48663", education: "#c3b37e", interest: "#d3a3b4", interaction: "#8fbdb4" };
 const TL_REL_HUE = { family: "#c98d69", partner: "#d39f8a", social: "#cdbca7", professional: "#a3b5cc", affiliation: "#a3b5cc", structure: "#93a7c1", other: "#b9aea3" };
 const TL_CONFIDENCE = { high: "Sure", medium: "Fairly sure", low: "Uncertain", unknown: "Don't know" };
 const TL_DETAIL_LIMIT = 6; // entries shown per month group before "Show N more"
@@ -56,6 +66,9 @@ function tlMark(e, size = 16) {
     employment: `<path d="M8 2.2 13.8 8 8 13.8 2.2 8z" fill="${fill}" ${s}/>`,
     life: `<circle cx="8" cy="8" r="4.6" fill="${fill}" ${s}/>`,
     event: `<path d="M8 1.8 9.6 6.4 14.2 8 9.6 9.6 8 14.2 6.4 9.6 1.8 8 6.4 6.4z" fill="${fill}" ${s}/>`,
+    education: `<path d="M8 3.200 14.200 12.800H1.800z" fill="${fill}" ${s}/>`,
+    interest: `<path d="M8 13.400S2.400 10 2.400 6.200C2.400 4.400 3.700 3.200 5.200 3.200c1.200 0 2.200.7 2.800 1.700.6-1 1.600-1.700 2.800-1.700 1.500 0 2.800 1.200 2.800 3 0 3.800-5.600 7.200-5.600 7.200z" fill="${fill}" ${s}/>`,
+    interaction: `<path d="M2.400 3.600h11.200v7.200H7.200l-2.800 2.400v-2.400h-2z" fill="${fill}" ${s}/>`,
   }[e.category];
   return `<svg class="tl-glyph" width="${size}" height="${size}" viewBox="0 0 16 16" aria-hidden="true">${body}</svg>`;
 }
@@ -69,7 +82,8 @@ function tlWho(i) {
 /** The parts of an entry's sentence, read from the focused entity's side where it matters. */
 function tlParts(e, who = (i) => tlWho(i)) {
   const people = (e.entities || []).map(who).filter(Boolean);
-  if (e.category === "event") return { title: e.title, people };
+  if (e.category === "event" || e.category === "interaction") return { title: e.title, people };
+  if (e.category === "interest") return { a: people[0], phrase: t(INTEREST_PHRASE[e.type] || "is interested in"), text: e.detail, people };
   if (e.category === "life") return { a: people[0], phrase: cap(t(e.phrase)), people };
   let [a, b] = people;
   const type = e.category === "relationship" ? tlType(e) : null;
@@ -89,6 +103,12 @@ function tlParts(e, who = (i) => tlWho(i)) {
     if (focus && b.id === focus) [a, b, phrase] = [b, a, past ? "employed" : "employs"];
     else phrase = past ? "worked at" : "works at";
   }
+  if (e.category === "education") {
+    const past = e.moment === "end" || e.state === "former";
+    if (!b) return { a, phrase: past ? t("studied") : t("studies"), text: e.detail || t("subject not recorded"), people };
+    if (focus && b.id === focus) [a, b, phrase] = [b, a, past ? "had student" : "has student"];
+    else phrase = past ? "studied at" : "studies at";
+  }
   return { a, b, phrase: t(phrase), people };
 }
 function tlTitleHtml(e, parts = tlParts(e)) {
@@ -104,6 +124,7 @@ function tlTitleText(e, parts = tlParts(e)) {
 }
 function tlTag(e) {
   if (e.category === "event") return t(TL.data.categories[e.type] || cap(e.type));
+  if (e.category === "interaction") return t(IX_TYPES[e.type] || cap(String(e.type || "").replace(/_/g, " ")));
   if (e.category === "life") return cap(t(e.phrase));
   return { start: t("Began"), end: t("Ended"), record: t("Undated") }[e.moment];
 }
@@ -137,12 +158,16 @@ function tlSpan(from, until) {
 /** The quiet second line: kind, period context, certainty, sources. */
 function tlSub(e) {
   const bits = [];
-  if (e.category === "relationship") bits.push(t(REL_CATEGORIES()[tlType(e).category] || "Relationship"));
-  else if (e.category === "event") {
+  if (e.category === "relationship") {
+    bits.push(t(REL_CATEGORIES()[tlType(e).category] || "Relationship"));
+    if (e.kinship && !(e.type === "parent" && e.kinship === "biological")) bits.push(kinshipText(e.type, e.kinship));
+  }
+  else if (e.category === "event" || e.category === "interaction") {
     const parts = tlParts(e);
     if (parts.people.length) bits.push(parts.people.map((p) => p.name).join(", "));
   } else bits.push(t(TL_CATEGORY[e.category].noun));
-  if (e.detail && !(e.category === "employment" && !tlParts(e).b)) bits.push(e.category === "relationship" ? `“${e.detail}”` : e.detail);
+  if (e.category === "interest" && e.context) bits.push(e.context);
+  if (e.detail && e.category !== "interest" && !((e.category === "employment" || e.category === "education") && !tlParts(e).b)) bits.push(e.category === "relationship" ? `“${e.detail}”` : e.detail);
   const [from, until] = tlPeriod(e);
   if (e.moment === "start") {
     if (until) bits.push(t("until {date}", { date: formatPartial(until) }));
@@ -167,7 +192,7 @@ function tlVisible(e) {
   const kinds = (e.entities || []).map((i) => TL.data.entities[i]?.[1]);
   if (kinds.length && !kinds.some((k) => f.kinds.has(k))) return false;
   if (f.categories && !f.categories.has(e.category)) return false;
-  const period = ["relationship", "membership", "employment"].includes(e.category);
+  const period = TL_PERIODS.includes(e.category);
   if (period && f.status === "current" && !(e.state === "current" && e.moment !== "end")) return false;
   if (period && f.status === "ended" && e.state !== "former") return false;
   return true;
@@ -261,12 +286,12 @@ function tlFilterBody() {
   const all = [...d.entries, ...d.undated];
   const kindsIn = new Set(all.flatMap((e) => (e.entities || []).map((i) => d.entities[i]?.[1])));
   const cats = tlCounts(all);
-  const hasPeriods = all.some((e) => ["relationship", "membership", "employment"].includes(e.category));
+  const hasPeriods = all.some((e) => TL_PERIODS.includes(e.category));
   const f = TL.filter;
   const kindRow = (k, label) => (kindsIn.has(k) ? `<label class="check"><input type="checkbox" data-tl-kind="${k}" ${f.kinds.has(k) ? "checked" : ""}>${glyph(k)}<span>${esc(t(label))}</span></label>` : "");
   return `<fieldset><legend>${esc(t("Involving"))}</legend>${kindRow("p", "People")}${kindRow("o", "Organizations")}${kindRow("g", "Groups")}</fieldset>
     ${cats.length > 1 ? `<fieldset><legend>${esc(t("What"))}</legend>${cats.map(([c, n]) => `<label class="check"><input type="checkbox" data-tl-cat="${c}" ${!f.categories || f.categories.has(c) ? "checked" : ""}>${tlMark({ category: c, moment: "start", group: "social" }, 14)}<span>${esc(t(TL_CATEGORY[c].label))}</span><span class="n">${n}</span></label>`).join("")}</fieldset>` : ""}
-    ${hasPeriods ? `<fieldset><legend>${esc(t("Connections"))}</legend>${segmented("tl-status", t("Connections"), [["all", t("All")], ["current", t("Still in effect")], ["ended", t("Ended")]], f.status)}<p class="ae-hint">${esc(t("Applies to relationships, memberships and work."))}</p></fieldset>` : ""}
+    ${hasPeriods ? `<fieldset><legend>${esc(t("Connections"))}</legend>${segmented("tl-status", t("Connections"), [["all", t("All")], ["current", t("Still in effect")], ["ended", t("Ended")]], f.status)}<p class="ae-hint">${esc(t("Applies to relationships, memberships, work, education and interests."))}</p></fieldset>` : ""}
     <fieldset><legend>${esc(t("Years"))}</legend><div class="tl-years-in"><input class="ae-input" id="tl-from" inputmode="numeric" maxlength="4" placeholder="${esc(t("From"))}" aria-label="${esc(t("From year"))}" value="${esc(f.from)}"><span aria-hidden="true">–</span><input class="ae-input" id="tl-to" inputmode="numeric" maxlength="4" placeholder="${esc(t("To"))}" aria-label="${esc(t("To year"))}" value="${esc(f.to)}"></div><p class="ae-hint">${esc(t("Entries without a date are hidden while a range is set."))}</p></fieldset>
     <button class="ae-btn ae-btn--sm ae-btn--quiet" data-act="tl-reset">${esc(t("Reset filters"))}</button>`;
 }
@@ -356,17 +381,25 @@ function tlFocusEntity(x, entryId = null) {
   return state.route.view === "timeline" ? render() : go("timeline");
 }
 
-/** One entry row: date, marker, tag, sentence, and a quiet line of context. */
-function tlRow(e, { compact = false } = {}) {
+/** One entry row: date, marker, tag, sentence, and a quiet line of context. Entries on the
+    same exact date (MeridianUX.dayRuns) share the first one's date label; each stays its own
+    row with its own label for assistive technology. */
+function tlRow(e, { compact = false, run = null } = {}) {
   const parts = tlParts(e);
   const sub = tlSub(e);
   const label = [tlDate(e.date, e.approximate), tlTag(e), tlTitleText(e, parts), ...sub].join(", ");
-  return `<li class="tl-entry m-${e.moment} c-${e.category}${e.ongoing ? " is-ongoing" : ""}${e.state === "former" ? " is-past" : ""}" style="--hue:${tlHue(e)}">
+  const day = run?.continued ? ` is-day-cont${run.closes ? " is-day-close" : ""}` : run?.opens ? " is-day-open" : "";
+  return `<li class="tl-entry m-${e.moment} c-${e.category}${e.ongoing ? " is-ongoing" : ""}${e.state === "former" ? " is-past" : ""}${day}" style="--hue:${tlHue(e)}">
     <button class="tl-item${TL.selected === e.id ? " is-selected" : ""}" data-act="tl-select" data-entry="${esc(e.id)}" tabindex="-1" aria-label="${esc(label)}" aria-pressed="${TL.selected === e.id}">
-      <span class="tl-when">${esc(tlWhen(e))}</span>
+      <span class="tl-when">${run?.continued ? "" : esc(tlWhen(e))}</span>
       <span class="tl-mark">${tlMark(e)}</span>
       <span class="tl-text"><span class="tl-line"><span class="tl-tag">${esc(tlTag(e))}</span>${tlTitleHtml(e, parts)}</span>${!compact && sub.length ? `<span class="tl-sub">${sub.map(esc).join(" · ")}</span>` : ""}</span>
     </button></li>`;
+}
+/** Rows for a run of entries in display order, with same-day entries grouped. */
+function tlRows(list, options = {}) {
+  const runs = MeridianUX.dayRuns(list);
+  return list.map((e, i) => tlRow(e, { ...options, run: runs[i] })).join("");
 }
 /** The overview of a year: what kinds of things happened, and its most telling entries. */
 function tlYearSummary(list) {
@@ -374,7 +407,7 @@ function tlYearSummary(list) {
     .map(([c, n]) => `<span class="tl-count" style="--hue:${tlHue({ category: c, group: "social" })}">${tlMark({ category: c, moment: "start", group: "social" }, 12)}${esc(plural(n, ...TL_COUNT[c]))}</span>`)
     .join("");
 }
-const TL_WEIGHT = { event: 0, life: 1, relationship: 2, membership: 3, employment: 3 };
+const TL_WEIGHT = { event: 0, life: 1, interaction: 2, relationship: 2, membership: 3, employment: 3, education: 3, interest: 4 };
 const TL_LAZY_AT = 600; // above this many entries, Detail builds years as they come near
 
 /** A year's entries: in Overview its most telling few, in Detail every month group. */
@@ -383,7 +416,7 @@ function tlYearBody(y, months, list = [...months.values()].flat()) {
   if (TL.mode === "overview" && !TL.open.has(y)) {
     const telling = [...list].sort((a, b) => TL_WEIGHT[a.category] - TL_WEIGHT[b.category]).slice(0, 3);
     const keep = new Set(telling.map((e) => e.id));
-    return `<ol class="tl-entries">${list.filter((e) => keep.has(e.id)).map((e) => tlRow(e, { compact: true })).join("")}</ol>${list.length > 3 ? `<button class="ae-btn ae-btn--sm ae-btn--quiet tl-more" data-act="tl-open-year" data-year="${y}" aria-expanded="false">${esc(t("Show all {n} in {year}", { n: list.length, year: y }))}</button>` : ""}`;
+    return `<ol class="tl-entries">${tlRows(list.filter((e) => keep.has(e.id)), { compact: true })}</ol>${list.length > 3 ? `<button class="ae-btn ae-btn--sm ae-btn--quiet tl-more" data-act="tl-open-year" data-year="${y}" aria-expanded="false">${esc(t("Show all {n} in {year}", { n: list.length, year: y }))}</button>` : ""}`;
   }
   // Month labels help in a busy year; in a quiet one the dates beside entries suffice.
   const labelled = list.length >= 3 && (months.size > 1 || !months.has("00"));
@@ -392,7 +425,7 @@ function tlYearBody(y, months, list = [...months.values()].flat()) {
     const full = TL.more.has(key) || entries.length <= TL_DETAIL_LIMIT + 1;
     const shown = full ? entries : entries.slice(0, TL_DETAIL_LIMIT);
     const label = m === "00" ? t("During {year}", { year: y }) : fmt({ month: "long" }, +y, +m, 1);
-    html += `<div class="tl-group${m === "00" ? " is-year" : ""}">${labelled ? `<p class="tl-month">${esc(label)}${m === "00" ? `<span class="tl-month-note">${esc(t("day and month not recorded"))}</span>` : ""}</p>` : ""}<ol class="tl-entries">${shown.map((e) => tlRow(e)).join("")}</ol>${full ? "" : `<button class="ae-btn ae-btn--sm ae-btn--quiet tl-more" data-act="tl-more" data-key="${key}">${esc(t("Show {n} more from {when}", { n: entries.length - shown.length, when: m === "00" ? y : `${label} ${y}` }))}</button>`}</div>`;
+    html += `<div class="tl-group${m === "00" ? " is-year" : ""}">${labelled ? `<p class="tl-month">${esc(label)}${m === "00" ? `<span class="tl-month-note">${esc(t("day and month not recorded"))}</span>` : ""}</p>` : ""}<ol class="tl-entries">${tlRows(shown)}</ol>${full ? "" : `<button class="ae-btn ae-btn--sm ae-btn--quiet tl-more" data-act="tl-more" data-key="${key}">${esc(t("Show {n} more from {when}", { n: entries.length - shown.length, when: m === "00" ? y : `${label} ${y}` }))}</button>`}</div>`;
   }
   if (TL.mode === "overview") html += `<button class="ae-btn ae-btn--sm ae-btn--quiet tl-more" data-act="tl-open-year" data-year="${y}" aria-expanded="true">${esc(t("Show less of {year}", { year: y }))}</button>`;
   return html;
@@ -558,14 +591,14 @@ function tlDetailHead(e, parts) {
   const i = list.findIndex((x) => x.id === e.id);
   return `<div class="tl-detail-head" style="--hue:${tlHue(e)}">
     <span class="tl-detail-mark">${tlMark(e, 22)}</span>
-    <p class="tl-detail-eyebrow">${esc(tlTag(e))}${e.category !== "event" && e.category !== "life" ? ` · ${esc(t(TL_CATEGORY[e.category].noun))}` : ""}</p>
+    <p class="tl-detail-eyebrow">${esc(tlTag(e))}${!["event", "life", "interaction"].includes(e.category) ? ` · ${esc(t(TL_CATEGORY[e.category].noun))}` : ` ${e.category === "interaction" ? `· ${esc(t("Interaction"))}` : ""}`}</p>
     <div class="tl-detail-nav"><button class="graph-tool is-icon" data-act="tl-step" data-step="-1" ${i <= 0 ? "disabled" : ""} aria-label="${esc(t("Earlier entry"))}" title="${esc(t("Earlier entry"))}">‹</button><button class="graph-tool is-icon" data-act="tl-step" data-step="1" ${i < 0 || i >= list.length - 1 ? "disabled" : ""} aria-label="${esc(t("Later entry"))}" title="${esc(t("Later entry"))}">›</button><button class="graph-tool is-icon" data-act="tl-close" aria-label="${esc(t("Close details"))}" title="${esc(t("Close details"))}">${icon("x")}</button></div>
   </div><h3 class="tl-detail-title" tabindex="-1">${tlTitleHtml(e, parts)}</h3>`;
 }
 function tlWhenBlock(e) {
   const rows = [];
   const line = (label, value, note = "") => `<div class="tl-fact"><span class="k">${esc(label)}</span><span class="v">${esc(value)}${note ? `<span class="note">${esc(note)}</span>` : ""}</span></div>`;
-  if (["relationship", "membership", "employment"].includes(e.category)) {
+  if (TL_PERIODS.includes(e.category)) {
     const [from, until] = tlPeriod(e);
     rows.push(line(t("Began"), tlDate(from), from ? tlPrecision(from) : t("not recorded")));
     if (until) rows.push(line(t("Ended"), tlDate(until), tlPrecision(until)));
@@ -586,7 +619,7 @@ function tlDetailBody(e, full) {
     .map((x) => `<li class="tl-person"><button class="tl-person-open" data-act="open-entity" data-id="${esc(x.id)}" data-kind="${x.kind}">${avatar(x.display_name, x.id, `sm is-${x.kind}`)}<span class="grow"><span class="primary">${esc(x.display_name)}</span><span class="secondary">${esc(t(KIND_NOUN[x.kind]))}${full.roles?.[x.id] ? ` · ${esc(full.roles[x.id])}` : ""}</span></span></button>
       <span class="acts">${TL.entity?.id === x.id ? "" : `<button class="graph-tool is-icon" data-act="tl-focus" data-id="${esc(x.id)}" data-kind="${x.kind}" data-name="${esc(x.display_name)}" aria-label="${esc(t("{name} over time", { name: x.display_name }))}" title="${esc(t("{name} over time", { name: x.display_name }))}">${icon("calendar")}</button>`}<button class="graph-tool is-icon" data-act="tl-graph" data-id="${esc(x.id)}" aria-label="${esc(t("Show {name} in the graph", { name: x.display_name }))}" title="${esc(t("Show in the graph"))}">${icon("graph")}</button></span></li>`)
     .join("");
-  const notes = [full.description, full.note].filter(Boolean);
+  const notes = [full.description, full.notes, full.note].filter(Boolean);
   const context = e.detail ? (e.category === "relationship" ? `“${e.detail}”` : e.detail) : "";
   const sources = (full.sources || []).map((s) => `<li>${esc(t(SOURCE_KINDS[s.kind] || cap(s.kind)))}${s.entity_name || s.label ? ` · ${esc(s.entity_name && !s.label ? s.entity_name : s.label)}` : ""}${s.learned ? ` · ${esc(t("learned {date}", { date: formatPartial(s.learned) }))}` : ""}</li>`);
   const authority = {
@@ -594,14 +627,17 @@ function tlDetailBody(e, full) {
     membership: [t("This is a group membership. Edit it on the profile."), t("Edit membership")],
     employment: [t("This comes from a work record on the profile."), t("Edit work")],
     date: [t("This comes from a date on the profile."), t("Edit dates")],
+    education: [t("This comes from an education record on the profile."), t("Edit education")],
+    interest: [t("This comes from an interest or preference on the profile."), t("Edit interests")],
   }[full.record];
-  return `<div class="tl-facts">${tlWhenBlock(e)}${context ? `<div class="tl-fact"><span class="k">${esc(e.category === "membership" ? t("Role") : e.category === "employment" ? t("Role") : t("In their words"))}</span><span class="v">${esc(context)}</span></div>` : ""}
+  const interaction = full.record === "interaction";
+  return `<div class="tl-facts">${tlWhenBlock(e)}${context ? `<div class="tl-fact"><span class="k">${esc(e.category === "membership" || e.category === "employment" ? t("Role") : e.category === "education" ? t("Studied") : e.category === "interest" ? t("What") : t("In their words"))}</span><span class="v">${esc(context)}</span></div>` : ""}
       <div class="tl-fact"><span class="k">${esc(t("Certainty"))}</span><span class="v">${esc(t(TL_CONFIDENCE[full.confidence] || "Not stated"))}</span></div></div>
     ${people ? `<p class="gp-label">${esc(t("Involved"))}</p><ul class="tl-people">${people}</ul>` : ""}
-    ${notes.length ? `<p class="gp-label">${esc(full.record === "event" ? t("Description") : t("Note"))}</p>${notes.map((n) => `<p class="tl-note">${esc(n)}</p>`).join("")}` : ""}
+    ${notes.length ? `<p class="gp-label">${esc(full.record === "event" ? t("Description") : interaction ? t("Notes") : t("Note"))}</p>${notes.map((n) => `<p class="tl-note">${esc(n)}</p>`).join("")}` : ""}
     <p class="gp-label">${esc(t("Where this comes from"))}</p>${sources.length ? `<ul class="tl-sources">${sources.join("")}</ul>` : `<p class="gp-hint">${esc(t("No source recorded."))}</p>`}
     ${full.editable
-      ? `<div class="gp-actions"><button class="ae-btn ae-btn--sm" data-act="tl-edit-event" data-id="${esc(full.record_id)}">${icon("edit")}<span>${esc(t("Edit event"))}</span></button><button class="ae-btn ae-btn--sm ae-btn--quiet is-danger" data-act="tl-delete-event" data-id="${esc(full.record_id)}">${icon("trash")}<span>${esc(t("Delete"))}</span></button></div>${full.updated_at ? `<p class="gp-hint">${esc(t("Recorded {when}", { when: relativeTime(full.created_at) }))}${full.updated_at !== full.created_at ? ` · ${esc(t("changed {when}", { when: relativeTime(full.updated_at) }))}` : ""}</p>` : ""}`
+      ? `<div class="gp-actions"><button class="ae-btn ae-btn--sm" data-act="${interaction ? "ix-edit" : "tl-edit-event"}" data-id="${esc(full.record_id)}">${icon("edit")}<span>${esc(interaction ? t("Edit interaction") : t("Edit event"))}</span></button><button class="ae-btn ae-btn--sm ae-btn--quiet is-danger" data-act="${interaction ? "ix-delete" : "tl-delete-event"}" data-id="${esc(full.record_id)}">${icon("trash")}<span>${esc(t("Delete"))}</span></button></div>${full.updated_at ? `<p class="gp-hint">${esc(t("Recorded {when}", { when: relativeTime(full.created_at) }))}${full.updated_at !== full.created_at ? ` · ${esc(t("changed {when}", { when: relativeTime(full.updated_at) }))}` : ""}</p>` : ""}`
       : `<div class="tl-authority"><p>${esc(authority[0])}</p><button class="ae-btn ae-btn--sm" data-act="tl-edit-record" data-entry="${esc(e.id)}" data-ids="${esc(ids.join(","))}">${icon("edit")}<span>${esc(authority[1])}</span></button></div>`}`;
 }
 /** With nothing selected, the details column is a key to the marks (shapes, fill, lines). */
@@ -614,6 +650,9 @@ function tlLegend() {
       ${row({ category: "employment", moment: "start" }, t("Work"), t("a diamond, like an organization"))}
       ${row({ category: "life", moment: "at" }, t("Life date"), t("born, died, founded, anniversaries"))}
       ${row({ category: "event", moment: "at" }, t("Event"), t("something you recorded as it happened"))}
+      ${row({ category: "interaction", moment: "at" }, t("Interaction"), t("contact or time spent together"))}
+      ${row({ category: "education", moment: "start" }, t("Education"), t("school, course or training"))}
+      ${row({ category: "interest", moment: "start" }, t("Interest or preference"), t("only when its period is known"))}
     </ul>
     <ul class="tl-key-list">
       ${row({ category: "relationship", moment: "start", group: "social" }, t("Filled: began or happened"), "")}
@@ -650,7 +689,7 @@ function tlCloseDetails() {
 async function tlEditRecord(entryId, ids) {
   const full = await api("/timeline/entry" + query({ id: entryId }));
   saveTimelineState();
-  const owner = { relationship: TL.entity && ids.includes(TL.entity.id) ? TL.entity.id : full.subject_id, membership: full.member_id, employment: full.person_id, date: full.entity_id }[full.record];
+  const owner = { relationship: TL.entity && ids.includes(TL.entity.id) ? TL.entity.id : full.subject_id, membership: full.member_id, employment: full.person_id, education: full.person_id, interest: full.person_id, date: full.entity_id }[full.record];
   const kind = (full.entities || []).find((x) => x.id === owner)?.kind || "person";
   state.pendingEdit = { record: full.record, id: full.record_id };
   return go(kind === "person" ? "person" : "entity", owner, kind);
@@ -669,6 +708,8 @@ function runPendingEdit() {
       if (record) openMembership(record, null);
     } else if (pending.record === "employment") openPanel("employments");
     else if (pending.record === "date") openPanel("dates");
+    else if (pending.record === "education") openPanel("education");
+    else if (pending.record === "interest") openPanel("interests");
   });
 }
 
@@ -807,6 +848,193 @@ function deleteEvent(id) {
   });
 }
 
+/* ── Interactions (0.7.0, owner decision D8) ──
+   Entered by hand, stored once, shown for every participant. Links point to items Chronos and
+   Mnemosyne own; the choices are the items those modules already link to the participants. */
+
+const IX_PREVIEW = 5;
+const ixType = (type) => t(IX_TYPES[type] || cap(String(type || "").replace(/_/g, " ")));
+const ixState = () => formState() + JSON.stringify(evEditor.participants) + JSON.stringify((evEditor.links || []).map((l) => l.resource));
+function ixRow(x, focusId, hidden) {
+  const others = x.participants.filter((p) => p.entity.id !== focusId).map((p) => p.entity.display_name + (p.entity.deleted ? ` ${t("(in Trash)")}` : ""));
+  const bits = [
+    x.occurred ? tlDate(x.occurred, x.approximate) : t("Date unknown"),
+    others.length ? t("with {names}", { names: others.join(", ") }) : "",
+    x.group && x.group.id !== focusId ? t("in {group}", { group: x.group.display_name }) : "",
+    x.links.length ? plural(x.links.length, "{count} linked item", "{count} linked items") : "",
+    x.confidence === "low" ? t("uncertain") : "",
+  ].filter(Boolean);
+  return `<div class="vrow ix-row" ${hidden ? "hidden" : ""}><span class="label">${esc(ixType(x.type))}</span><span class="value strong">${esc(x.summary)}<span class="sub">${esc(bits.join(" · "))}</span></span><span class="acts">${act("edit", t("Edit interaction"), `data-act="ix-edit" data-id="${esc(x.id)}"`)}</span></div>`;
+}
+function interactionsSection(items, count) {
+  const shown = items.length || count;
+  const more = items.length > IX_PREVIEW ? `<button class="ae-btn ae-btn--quiet ae-btn--sm ix-more" data-act="ix-more">${esc(t("Show all {n}", { n: items.length }))}</button>` : "";
+  const body = items.length ? items.map((x, i) => ixRow(x, state.person?.id, i >= IX_PREVIEW)).join("") : `<p class="gp-hint">${esc(t("Loading…"))}</p>`;
+  return `<section class="psection" data-section="interactions"><div class="section-head"><h3>${icon("chat")}${esc(t("Interactions"))} <span class="count">${shown}</span></h3><button class="ae-btn ae-btn--quiet ae-btn--sm" data-act="add-interaction">${icon("plus")}<span>${esc(t("Add interaction"))}</span></button></div><div class="list vrows">${body}</div>${more}</section>`;
+}
+async function loadInteractions(p) {
+  const box = $("#interactions-box");
+  if (!box || box.dataset.entity !== p.id) return;
+  const result = await api("/interactions" + query({ entity: p.id })).catch(() => null);
+  if (!box.isConnected || state.person?.id !== p.id || !result) return;
+  box.innerHTML = interactionsSection(result.items, result.items.length);
+}
+async function reloadProfile() {
+  const p = state.person;
+  if (!p || !["person", "entity"].includes(state.route.view)) return;
+  state.person = await api(p.kind === "person" ? `/people/${p.id}` : `/entities/${p.id}`);
+  refreshPerson();
+}
+const ixGone = (l) => (l.availability === "deleted" ? t("deleted there") : l.availability === "available" || l.availability === "unknown" ? "" : ["forbidden", "not_found", "not_resolvable"].includes(l.availability) ? t("not available") : t("not available right now"));
+function ixLinks() {
+  const list = $("#ix-links");
+  list.innerHTML = evEditor.links
+    .map((l, i) => {
+      const note = ixGone(l);
+      const kind = t(LINKED_KIND[`${l.module}:${l.type}`] || "Linked in {module}", { module: cap(l.module) });
+      const open = !note && (state.context.applications || []).some((a) => a.id === l.module) ? `<button class="ae-btn ae-btn--quiet ae-btn--icon ae-btn--sm" data-act="open-module" data-module="${esc(l.module)}" aria-label="${esc(t("Open {module}", { module: cap(l.module) }))}">${icon("external")}</button>` : "";
+      return `<li class="ix-link${note ? " is-gone" : ""}">${icon(LINKED_ICON[l.module] || "link")}<span class="grow"><span class="primary">${esc(l.label || t("Something linked here"))}</span><span class="secondary">${esc([kind, note].filter(Boolean).join(" · "))}</span></span>${open}<button class="ae-btn ae-btn--quiet ae-btn--icon ae-btn--sm" data-act="ix-link-remove" data-i="${i}" aria-label="${esc(t("Remove link"))}">${icon("x")}</button></li>`;
+    })
+    .join("");
+}
+async function ixLoadCandidates() {
+  const box = $("#ix-candidates");
+  box.hidden = false;
+  if (!evEditor.participants.length) {
+    box.innerHTML = `<p class="ae-hint">${esc(t("Add who was involved first."))}</p>`;
+    return;
+  }
+  box.innerHTML = `<p class="ae-hint">${esc(t("Loading…"))}</p>`;
+  const params = evEditor.participants.map((p) => `entity=${encodeURIComponent(p.id)}`).join("&");
+  const found = await api(`/interaction-link-candidates?${params}`).catch(() => ({ availability: "error", items: [] }));
+  if (!box.isConnected) return;
+  const linked = new Set(evEditor.links.map((l) => l.resource));
+  evEditor.candidates = found.items.filter((c) => c.availability === "available" && !linked.has(c.resource));
+  if (!evEditor.candidates.length) {
+    box.innerHTML = `<p class="ae-hint">${esc(found.availability === "available" ? t("Nothing to link yet. Items appear here once a participant is linked to them in Chronos or Mnemosyne.") : t("Other modules cannot be reached right now."))}</p>`;
+    return;
+  }
+  box.innerHTML = `<ul class="ix-choices">${evEditor.candidates.map((c, i) => `<li><button class="ix-choice" data-act="ix-link-pick" data-i="${i}">${icon(LINKED_ICON[c.module] || "link")}<span class="grow"><span class="primary">${esc(c.label)}</span><span class="secondary">${esc(t(LINKED_KIND[`${c.module}:${c.type}`] || "Linked in {module}", { module: cap(c.module) }))}</span></span></button></li>`).join("")}</ul>`;
+}
+async function ixPlaceSearch(q) {
+  const box = $("#ix-place-results");
+  if (!box) return;
+  box.hidden = !q.trim();
+  if (box.hidden) return;
+  const found = await api("/interaction-search" + query({ q })).catch(() => ({ availability: "error", items: [] }));
+  if (!box.isConnected) return;
+  const linked = new Set(evEditor.links.map((l) => l.resource));
+  evEditor.places = found.items.filter((c) => !linked.has(c.resource));
+  box.innerHTML = evEditor.places.length
+    ? `<ul class="ix-choices">${evEditor.places.map((c, i) => `<li><button class="ix-choice" data-act="ix-place-pick" data-i="${i}">${icon(LINKED_ICON[c.module] || "link")}<span class="grow"><span class="primary">${esc(c.label)}</span><span class="secondary">${esc(t(LINKED_KIND[`${c.module}:${c.type}`] || "Linked in {module}", { module: c.module_name }))}</span></span></button></li>`).join("")}</ul>`
+    : `<p class="ae-hint">${esc(found.availability === "available" ? t("Nothing matches.") : t("Other modules cannot be reached right now."))}</p>`;
+}
+async function openInteraction(record = null, { with: preset = [], invoker = null } = {}) {
+  if (panel.isDirty() && !(await confirmDiscard())) return;
+  evEditor.record = record;
+  evEditor.after = null;
+  evEditor.candidates = [];
+  evEditor.participants = record ? record.participants.map((p) => ({ ...p.entity, role: p.role })) : preset.map((x) => ({ ...x, role: "" }));
+  evEditor.links = record ? record.links.map((l) => ({ ...l })) : [];
+  panel.invoker = invoker && invoker.isConnected ? invoker : panel.invoker;
+  const type = record?.type || "meeting";
+  const types = { ...IX_TYPES, ...(IX_TYPES[type] ? {} : { [type]: cap(type.replace(/_/g, " ")) }) };
+  openShell("interaction", {
+    eyebrow: t("Interactions"),
+    title: record ? t("Interaction") : t("New interaction"),
+    body: `<p class="ae-hint">${esc(t("Contact or time spent together that you want to remember: a coffee, a call, a visit. A wedding or a move belongs on the Timeline as an event."))}</p>
+      <div class="ae-field"><label class="ae-label" for="ix-summary">${esc(t("What happened"))}</label><input class="ae-input" id="ix-summary" maxlength="300" value="${esc(record?.summary || "")}" placeholder="${esc(t("e.g. “Coffee at the new place”, “Long call about the move”"))}"></div>
+      <div class="ae-field"><label class="ae-label" for="ix-type">${esc(t("Kind"))}</label><select class="ae-select" id="ix-type">${Object.entries(types).map(([k, l]) => `<option value="${esc(k)}" ${type === k ? "selected" : ""}>${esc(t(l))}</option>`).join("")}</select></div>
+      <fieldset class="rel-period"><legend class="ae-label">${esc(t("When"))}</legend>
+        <div class="ae-field">${dateInput("ix-date", record?.occurred)}</div>
+        <label class="check"><input type="checkbox" id="ix-approx" ${record?.approximate ? "checked" : ""}><span>${esc(t("The date is approximate"))}</span></label>
+        <p class="ae-hint">${esc(t("Leave unknown parts empty: a year alone, or a month and year, is fine. Leave it all empty if the date is not known."))}</p></fieldset>
+      <div class="ae-field"><span class="ae-label">${esc(t("Who took part"))}</span><ul class="ev-people" id="ev-people"></ul>${entityPicker("ev-add", { kinds: ["person", "organization", "group"], label: t("Add a person, organization or group") })}</div>
+      <div class="ae-field"><span class="ae-label">${esc(t("In a group (optional)"))}</span>${entityPicker("ix-group", { kinds: ["group"], label: t("Choose a group"), value: record?.group || null })}<p class="ae-hint">${esc(t("Context only: add the people who took part as well, when you know them."))}</p></div>
+      <div class="ae-field"><label class="ae-label" for="ix-notes">${esc(t("Notes (optional)"))}</label><textarea class="ae-textarea" id="ix-notes" rows="4" maxlength="8000">${esc(record?.notes || "")}</textarea></div>
+      <div class="ae-field"><span class="ae-label">${esc(t("Linked items (optional)"))}</span><ul class="ix-links" id="ix-links"></ul><button class="ae-btn ae-btn--sm" data-act="ix-link-load">${icon("link")}<span>${esc(t("Link an item"))}</span></button><div id="ix-candidates" hidden></div>
+        <input class="ae-input ix-place-q" id="ix-place-q" type="search" maxlength="100" autocomplete="off" placeholder="${esc(t("Search events, notes, tasks and places"))}" aria-label="${esc(t("Search events, notes, tasks and places"))}"><div id="ix-place-results" hidden></div></div>
+      <div class="ae-field"><label class="ae-label" for="rel-confidence">${esc(t("How sure are you?"))}</label><select class="ae-select" id="rel-confidence">${[["", "Not stated"], ["high", "Sure"], ["medium", "Fairly sure"], ["low", "Uncertain"], ["unknown", "Don't know"]].map(([v, l]) => `<option value="${v}" ${(record?.confidence || "") === v ? "selected" : ""}>${esc(t(l))}</option>`).join("")}</select></div>
+      <div class="rel-sources"><span class="ae-label">${esc(t("Where this comes from"))}</span><div id="src-rows">${(record?.sources || []).map(sourceRow).join("")}</div>
+        <button class="ae-btn ae-btn--sm" data-act="src-add">${icon("plus")}<span>${esc(t("Add a source"))}</span></button></div>`,
+    foot: record ? `<button class="ae-btn ae-btn--quiet is-danger" data-act="ix-delete" data-id="${esc(record.id)}">${icon("trash")}<span>${esc(t("Delete"))}</span></button>` : "",
+  });
+  evPeople();
+  ixLinks();
+  bindPicker($("#ev-add"), {
+    onPick: (x) => {
+      if (!x) return;
+      if (!evEditor.participants.some((p) => p.id === x.id)) evEditor.participants.push({ ...x, role: "" });
+      evPeople();
+      $("#ev-add")._unpick();
+    },
+  });
+  bindPicker($("#ix-group"));
+  let placeTimer;
+  $("#ix-place-q").addEventListener("input", (event) => {
+    clearTimeout(placeTimer);
+    placeTimer = setTimeout(() => ixPlaceSearch(event.target.value), 180);
+  });
+  panel.snapshot = ixState();
+  $("#ix-summary").focus({ preventScroll: true });
+}
+async function ixAfterSave(saved) {
+  if (state.route.view === "timeline") {
+    if (saved) TL.pending = `interaction:${saved.id}`;
+    else TL.selected = null;
+    return render({ focus: false });
+  }
+  await reloadProfile();
+}
+async function saveInteraction(button) {
+  const box = $("#form-error");
+  box.hidden = true;
+  if (ixState() === panel.snapshot) return closePanel();
+  try {
+    const summary = $("#ix-summary").value.trim();
+    if (!summary) throw Error(t("Say what happened."));
+    const date = readDate($('[data-date="ix-date"]'));
+    if (date.error) throw Error(t("When: {e}", { e: date.error }));
+    if (!evEditor.participants.length) throw Error(t("Add at least one person, organization or group."));
+    const record = evEditor.record;
+    const body = {
+      summary,
+      type: $("#ix-type").value,
+      occurred: date.value,
+      approximate: $("#ix-approx").checked,
+      notes: $("#ix-notes").value.trim(),
+      group_id: $("#ix-group [data-picked]").value || null,
+      confidence: $("#rel-confidence").value || null,
+      participants: evEditor.participants.map((p) => ({ entity_id: p.id, role: (p.role || "").trim() })),
+      links: evEditor.links.map((l) => ({ resource: l.resource, label: l.label || "" })),
+      sources: readSources(),
+      ...(record ? { expected_revision: record.revision } : {}),
+    };
+    button.classList.add("is-busy");
+    const saved = await api(record ? `/interactions/${record.id}` : "/interactions", record ? "PUT" : "POST", body);
+    button.classList.remove("is-busy");
+    panel.snapshot = ixState();
+    await closePanel();
+    toast(record ? t("Interaction saved") : t("Interaction added"), "good");
+    await ixAfterSave(saved);
+  } catch (error) {
+    button.classList.remove("is-busy");
+    box.textContent = error.message;
+    box.hidden = false;
+  }
+}
+function deleteInteraction(id) {
+  return confirmAction(t("Delete this interaction?"), t("It is removed for everyone who took part. People, groups and linked items are not affected."), t("Delete"), async () => {
+    await api(`/interactions/${id}`, "DELETE");
+    if (panel.el()) {
+      panel.snapshot = ixState();
+      await closePanel();
+    }
+    toast(t("Interaction deleted"));
+    await ixAfterSave(null);
+  });
+}
+
 /* ── On a profile: the entity's own timeline ── */
 
 function tabTimeline(p) {
@@ -832,10 +1060,9 @@ async function tabTimelineLoad(p) {
   const years = tlYears(data.entries);
   let html = "";
   for (const [y, months] of years)
-    html += `<div class="ptl-year"><p class="ptl-year-num">${y}</p><ol class="tl-entries">${[...months.values()]
-      .flat()
-      .map((e) => tlRow(e).replace('data-act="tl-select"', 'data-act="tl-goto"').replace('tabindex="-1"', ""))
-      .join("")}</ol></div>`;
+    html += `<div class="ptl-year"><p class="ptl-year-num">${y}</p><ol class="tl-entries">${tlRows([...months.values()].flat())
+      .replaceAll('data-act="tl-select"', 'data-act="tl-goto"')
+      .replaceAll('tabindex="-1"', "")}</ol></div>`;
   if (data.undated.length) html += `<div class="ptl-year"><p class="ptl-year-num">${esc(t("Date unknown"))}</p><ol class="tl-entries">${data.undated.map((e) => tlRow(e).replace('data-act="tl-select"', 'data-act="tl-goto"').replace('tabindex="-1"', "")).join("")}</ol></div>`;
   Object.assign(TL, saved);
   body.innerHTML = html || emptyState("calendar", t("Nothing dated yet"), t("Dates on relationships, memberships and work, life dates, and events involving {name} appear here.", { name: p.display_name }), "");
@@ -907,7 +1134,7 @@ document.addEventListener("click", async (event) => {
   const el = event.target.closest("[data-act]");
   if (!el || el.disabled) return;
   const act = el.dataset.act;
-  if (!act.startsWith("tl-") && !act.startsWith("ev-")) return;
+  if (!act.startsWith("tl-") && !act.startsWith("ev-") && !act.startsWith("ix-") && act !== "add-interaction") return;
   try {
     if (act === "tl-select") return tlSelect(el.dataset.entry, { scroll: false });
     if (act === "tl-close") return tlCloseDetails();
@@ -996,6 +1223,34 @@ document.addEventListener("click", async (event) => {
       return openEvent(record, { invoker: el });
     }
     if (act === "tl-delete-event") return deleteEvent(el.dataset.id);
+    if (act === "add-interaction") {
+      const p = state.person;
+      return openInteraction(null, { with: [{ id: p.id, kind: p.kind, display_name: p.display_name }], invoker: el });
+    }
+    if (act === "ix-edit") return openInteraction(await api(`/interactions/${el.dataset.id}`), { invoker: el });
+    if (act === "ix-delete") return deleteInteraction(el.dataset.id);
+    if (act === "ix-more") {
+      $$(".ix-row[hidden]", el.closest(".psection")).forEach((row) => (row.hidden = false));
+      return el.remove();
+    }
+    if (act === "ix-link-load") return ixLoadCandidates();
+    if (act === "ix-link-pick") {
+      evEditor.links.push({ ...evEditor.candidates[+el.dataset.i] });
+      ixLinks();
+      $("#ix-candidates").hidden = true;
+      return;
+    }
+    if (act === "ix-place-pick") {
+      evEditor.links.push({ ...evEditor.places[+el.dataset.i] });
+      ixLinks();
+      $("#ix-place-results").hidden = true;
+      $("#ix-place-q").value = "";
+      return;
+    }
+    if (act === "ix-link-remove") {
+      evEditor.links.splice(+el.dataset.i, 1);
+      return ixLinks();
+    }
     if (act === "ev-remove") {
       evEditor.participants.splice(+el.dataset.i, 1);
       evPeople();

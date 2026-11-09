@@ -2,8 +2,8 @@
   "protocol": 1,
   "id": "meridian",
   "name": "Meridian",
-  "description": "People, organizations and groups, how they relate, and what you know about them: profiles, relationships, a graph of your network, a timeline of how it changed, and contact import.",
-  "version": "0.3.1",
+  "description": "People, organizations and groups, how they relate, and what you know about them: profiles with pictures from Argus, relationships, a graph of your network, a timeline of how it changed, and contact import.",
+  "version": "0.10.0",
   "publisher": {
     "name": "Aureate Empyrean",
     "originalAuthors": [
@@ -19,7 +19,12 @@
   },
   "capabilities": [
     "ui.application",
-    "storage.data"
+    "storage.data",
+    "projections.read",
+    "references.create",
+    "events.publish",
+    "references.read",
+    "references.resolve"
   ],
   "routes": {
     "ui": "/",
@@ -28,21 +33,95 @@
   },
   "icon": "/icon.svg",
   "events": {
-    "produces": [],
+    "produces": [
+      "meridian.dated-items.changed"
+    ],
     "consumes": []
   },
   "resources": [
     {
       "type": "person",
       "resolvable": true
+    },
+    {
+      "type": "organization",
+      "resolvable": true
+    },
+    {
+      "type": "group",
+      "resolvable": true
+    },
+    {
+      "type": "interaction",
+      "resolvable": true
     }
   ],
   "references": {
     "version": 2,
+    "enumerate": true,
     "read": [],
-    "resolve": []
+    "resolve": [
+      {
+        "module": "chronos",
+        "type": "event"
+      },
+      {
+        "module": "mnemosyne",
+        "type": "note"
+      },
+      {
+        "module": "mnemosyne",
+        "type": "task"
+      },
+      {
+        "module": "mnemosyne",
+        "type": "project"
+      },
+      {
+        "module": "mnemosyne",
+        "type": "collection"
+      },
+      {
+        "module": "atlas",
+        "type": "place"
+      },
+      {
+        "module": "argus",
+        "type": "photo"
+      }
+    ]
   },
   "backup": {
     "version": 1
+  },
+  "projections": {
+    "version": 1,
+    "provides": [
+      "dated-items",
+      "people-directory",
+      "contact-addresses"
+    ],
+    "read": [
+      {
+        "module": "argus",
+        "projection": "photo-library"
+      },
+      {
+        "module": "argus",
+        "projection": "photo-renditions"
+      },
+      {
+        "module": "atlas",
+        "projection": "place-directory"
+      },
+      {
+        "module": "chronos",
+        "projection": "link-search"
+      },
+      {
+        "module": "mnemosyne",
+        "projection": "link-search"
+      }
+    ]
   }
 }

@@ -72,6 +72,9 @@ const ICONS = {
   pin: '<path d="M10 17s5.5-5 5.5-9a5.5 5.5 0 0 0-11 0c0 4 5.5 9 5.5 9z"/><circle cx="10" cy="8" r="2"/>',
   cake: '<path d="M4 16.5h12v-5.5c0-.8-.7-1.5-1.5-1.5h-9c-.8 0-1.5.7-1.5 1.5z"/><path d="M4 13c1.3 0 1.3-1 2.7-1s1.3 1 2.6 1 1.4-1 2.7-1 1.3 1 2.7 1 1.3-1 1.3-1M10 9.5V7"/><path d="M10 4.2c.6.7.9 1.3.9 1.8a.9.9 0 0 1-1.8 0c0-.5.3-1.1.9-1.8z"/>',
   calendar: '<rect x="3.5" y="4.5" width="13" height="12" rx="2"/><path d="M3.5 8.5h13M7 3v3M13 3v3"/>',
+  school: '<path d="M10 4 2.5 7.8 10 11.6l7.5-3.8z"/><path d="M5.5 9.6v3.6c1.3 1.3 2.9 2 4.5 2s3.2-.7 4.5-2V9.6M17.5 7.8v4.4"/>',
+  heart: '<path d="M10 16.2S3 12.3 3 7.6C3 5.5 4.6 4 6.5 4c1.4 0 2.7.8 3.5 2.1C10.800 4.800 12.100 4 13.500 4 15.400 4 17 5.500 17 7.600c0 4.700-7 8.600-7 8.600z"/>',
+  chat: '<path d="M3.500 5.500c0-.8.7-1.500 1.500-1.500h10c.8 0 1.500.7 1.500 1.500v6.500c0 .8-.7 1.500-1.500 1.500H9l-3.500 2.800v-2.800H5c-.8 0-1.500-.7-1.500-1.500z"/>',
   briefcase: '<rect x="3" y="6.5" width="14" height="9.5" rx="2"/><path d="M7.5 6.5V5c0-.8.7-1.5 1.5-1.5h2c.8 0 1.5.7 1.5 1.5v1.5M3 10.5h14"/>',
   at: '<circle cx="10" cy="10" r="3"/><path d="M13 10v1.3a2.2 2.2 0 0 0 4.4 0V10a7.4 7.4 0 1 0-2.9 5.9"/>',
   note: '<path d="M5 3.5h7l3 3v10H5z"/><path d="M12 3.5v3h3M7.5 10h5M7.5 13h5"/>',
@@ -241,6 +244,8 @@ const state = {
   counts: { people: 0, trash: 0, imports: 0 },
   self: null,
   version: "",
+  // People sorting and name display (Settings → People), stored by Meridian.
+  prefs: { people_sort: "given", people_display: "given" },
   people: { q: "", has: new Set(), sort: "name", items: [], total: 0, limit: 100 },
   person: null,
   tab: "overview",
@@ -325,6 +330,7 @@ function confirmAction(title, text, label, run, { danger = true } = {}) {
 }
 /** Resolves true when the user agrees to drop unsaved edits. */
 function confirmDiscard() {
+  if (panel.session) return confirmContactClose();
   return new Promise((resolve) => {
     let answered = false;
     const answer = (value) => {
@@ -474,21 +480,42 @@ async function openPerson(id, from, kind = "person") {
   transition.finished.then(done, done);
   transition.ready.catch(done);
 }
-/** Navigate. Unsaved edits in the side panel are never dropped silently. */
+/** Navigate. Unsaved edits in the side panel are never dropped silently. Inside Nexus with
+ * the navigation contract, the move becomes a browser history entry and is shown when Nexus
+ * confirms it (frontend/navigation.js); otherwise it is shown directly, as before. */
 async function go(view, id = null, kind = null) {
   if (panel.isDirty() && !(await confirmDiscard())) return;
+  const next = { view, id, kind };
+  if (meridianNavigation.enabled) {
+    try {
+      await queueNavigation(MeridianRoutes.serialize(next), "push");
+    } catch (error) {
+      if (!/superseded/i.test(error.message)) toast(error.message, "danger");
+    }
+    return;
+  }
+  leaveView();
+  return showRoute(next);
+}
+/** Tidy up the screen being left: the side panel, and state worth keeping per view. */
+function leaveView() {
   closePanel();
   if (state.route.view === "graph") saveGraphState();
   if (state.route.view === "timeline") saveTimelineState();
   document.body.classList.remove("tl-sheet-open");
   if (state.route.view === "people") state.people.scroll = scrollPos();
+}
+function showRoute(next, options) {
+  const { view, id } = next;
   // A profile opened from elsewhere starts on Profile; re-rendering the same one keeps its tab.
   if ((view === "person" || view === "entity") && (id !== state.person?.id || state.route.view !== view)) state.tab = "overview";
-  state.route = { view, id, kind };
-  render();
+  state.route = { view, id, kind: next.kind || null };
+  return render(options);
 }
 function routeFromLocation() {
-  const path = location.pathname.replace(/^\/modules\/[^/]+/, "") || "/";
+  return routeFromPath(location.pathname.replace(/^\/modules\/[^/]+/, "") || "/");
+}
+function routeFromPath(path) {
   const person = path.match(/^\/people\/([0-9a-f-]{36})$/);
   if (person) return { view: "person", id: person[1] };
   const entity = path.match(/^\/(organizations|groups)\/([0-9a-f-]{36})$/);
@@ -564,12 +591,337 @@ function tone(key = "") {
   for (const c of String(key)) h = (h * 31 + c.codePointAt(0)) >>> 0;
   return h % TONES;
 }
-const avatar = (name, key, cls = "") => `<span class="avatar tone-${tone(key || name)} ${cls}" aria-hidden="true">${esc(initials(name))}</span>`;
+const ENTITY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const avatar = (name, key, cls = "") => {
+  const photo = ENTITY_ID.test(key || "") ? PICTURES.known(key) : null;
+  return `<span class="avatar tone-${tone(key || name)} ${cls}${photo ? " has-photo" : ""}" aria-hidden="true"${ENTITY_ID.test(key || "") ? ` data-avatar="${esc(key)}"` : ""}${photo ? ` style="background-image:url(${photo})"` : ""}>${esc(initials(name))}</span>`;
+};
+
+/* ───────────────────────── Pictures (Argus) ───────────────────────── */
+/* An entity's picture is an Argus photo plus the owner's crop; Meridian's backend asks Argus
+   for rendered images and the page only ever sees data: URLs. Avatars render initials first
+   and are upgraded in place when a picture arrives; anything other than an available picture
+   (no picture, Argus off, photo trashed or deleted) simply stays initials. */
+const PICTURES = {
+  cache: new Map(), // entity id → { src | null, size, at }
+  inflight: false,
+  queued: false,
+  TTL: 10 * 60 * 1000,
+  known(id) {
+    const hit = this.cache.get(id);
+    return hit && hit.src && Date.now() - hit.at < this.TTL ? hit.src : null;
+  },
+  forget(id) {
+    this.cache.delete(id);
+    $$(`.avatar[data-avatar="${CSS.escape(id)}"]`).forEach((el) => {
+      el.classList.remove("has-photo");
+      el.style.backgroundImage = "";
+      delete el.dataset.size;
+    });
+  },
+  sizeFor(el) {
+    return el.classList.contains("xl") ? 256 : el.classList.contains("lg") || el.classList.contains("md") ? 128 : 64;
+  },
+  apply(el, src) {
+    if (src) {
+      el.classList.add("has-photo");
+      el.style.backgroundImage = `url(${src})`;
+    } else {
+      el.classList.remove("has-photo");
+      el.style.backgroundImage = "";
+    }
+  },
+  schedule() {
+    if (this.queued) return;
+    this.queued = true;
+    requestAnimationFrame(() => {
+      this.queued = false;
+      this.hydrate();
+    });
+  },
+  async hydrate() {
+    if (this.inflight) return void (this.again = true);
+    const wanted = new Map(); // size → Set(ids)
+    for (const el of $$(".avatar[data-avatar]")) {
+      const id = el.dataset.avatar;
+      const size = this.sizeFor(el);
+      const hit = this.cache.get(id);
+      if (hit && Date.now() - hit.at < this.TTL && hit.size >= size) {
+        if (el.dataset.size !== String(hit.size)) {
+          this.apply(el, hit.src);
+          el.dataset.size = String(hit.size);
+        }
+        continue;
+      }
+      if (!wanted.has(size)) wanted.set(size, new Set());
+      wanted.get(size).add(id);
+    }
+    if (!wanted.size) return;
+    this.inflight = true;
+    try {
+      for (const [size, set] of wanted) {
+        const ids = [...set];
+        for (let i = 0; i < ids.length; i += 120) {
+          const chunk = ids.slice(i, i + 120);
+          const res = await api("/avatars", "POST", { ids: chunk, size });
+          for (const id of chunk) {
+            const item = res.items[id];
+            // Remember "no picture" too, but never longer than a picture: it may be set soon.
+            this.cache.set(id, { src: item?.status === "available" ? item.src : null, size, at: Date.now() - (item ? 0 : this.TTL / 2) });
+          }
+        }
+      }
+      for (const el of $$(".avatar[data-avatar]")) {
+        const hit = this.cache.get(el.dataset.avatar);
+        if (hit) {
+          this.apply(el, hit.src);
+          el.dataset.size = String(hit.size);
+        }
+      }
+    } catch {
+      // Pictures are optional; initials stay.
+    } finally {
+      this.inflight = false;
+      if (this.again) {
+        this.again = false;
+        this.schedule();
+      }
+    }
+  },
+};
+new MutationObserver(() => PICTURES.schedule()).observe(document.documentElement, { childList: true, subtree: true });
+
+const PICTURE_SHAPE = { person: "is-person", organization: "is-organization", group: "is-group" };
+const UNAVAILABLE_LIBRARY = {
+  module_uninstalled: "Argus is not installed in this Nexus, so there are no photos to choose from.",
+  module_disabled: "Argus is switched off in Nexus. Turn it on to choose a photo.",
+  not_granted: "Meridian may not read the Argus photo library yet. Review Meridian's access in Nexus.",
+  forbidden: "Argus did not allow Meridian to read its photo library.",
+};
+/** Choose an Argus photo and crop it for a Person, Organization or Group. */
+async function openPicture(entity, existing = entity.image) {
+  const shape = PICTURE_SHAPE[entity.kind] || "is-person";
+  const head = (title) => `<div class="ae-dialog-head"><h2>${esc(title)}</h2><button class="ae-btn ae-btn--quiet ae-btn--icon" data-act="close" aria-label="${esc(t("Close"))}">${icon("x")}</button></div>`;
+  const library = { items: [], cursor: null, availability: null };
+  async function loadMore() {
+    const res = await api(`/photo-library${query({ cursor: library.cursor || "" })}`);
+    library.availability = res.availability;
+    library.items.push(...res.items);
+    library.cursor = res.next_cursor;
+  }
+  function chooseStep() {
+    const d = openDialog(`${head(t("Picture for {name}", { name: entity.display_name }))}
+      <div class="ae-dialog-body pic-body"><div id="pic-grid" class="pic-grid" aria-busy="true"><p class="muted">${esc(t("Loading photos from Argus…"))}</p></div></div>
+      <div class="ae-dialog-foot pic-foot">${existing ? `<button class="ae-btn ae-btn--quiet" id="pic-remove">${icon("trash")}${esc(t("Remove picture"))}</button>` : ""}<span class="spacer"></span>${state.context.applications.some((a) => a.id === "argus") ? `<button class="ae-btn" id="pic-argus">${icon("upload")}${esc(t("Upload in Argus"))}</button>` : ""}${existing ? `<button class="ae-btn ae-btn--primary" id="pic-recrop">${esc(t("Adjust crop"))}</button>` : ""}</div>`, { wide: true });
+    const render = () => {
+      const grid = $("#pic-grid", d);
+      if (!grid) return;
+      grid.removeAttribute("aria-busy");
+      if (library.availability !== "available") {
+        grid.innerHTML = `<div class="pic-empty">${icon("info")}<p>${esc(t(UNAVAILABLE_LIBRARY[library.availability] || "Argus is not reachable right now. Try again in a moment; the current picture is kept."))}</p></div>`;
+        return;
+      }
+      if (!library.items.length) {
+        grid.innerHTML = `<div class="pic-empty">${icon("upload")}<p>${esc(t("No photos in Argus yet. Upload one there, then come back to choose it."))}</p></div>`;
+        return;
+      }
+      grid.innerHTML = library.items.map((it, i) => `<button class="pic-tile${existing?.photo_id === it.id ? " is-current" : ""}" data-i="${i}" title="${esc(it.title || t("Photo"))}" aria-label="${esc(it.title || t("Photo {n}", { n: i + 1 }))}">${it.thumbnail ? `<img src="${it.thumbnail}" alt="">` : `<span class="muted">${esc(t("No preview"))}</span>`}</button>`).join("") +
+        (library.cursor ? `<button class="ae-btn pic-more" id="pic-more">${esc(t("Show more"))}</button>` : "");
+      $$(".pic-tile", grid).forEach((b) => (b.onclick = () => cropStep(library.items[+b.dataset.i], null)));
+      const more = $("#pic-more", grid);
+      if (more) more.onclick = async () => {
+        more.classList.add("is-busy");
+        await loadMore().catch(() => {});
+        render();
+      };
+    };
+    loadMore().then(render, () => {
+      library.availability = "unreachable";
+      render();
+    });
+    const remove = $("#pic-remove", d);
+    if (remove) remove.onclick = async () => {
+      remove.classList.add("is-busy");
+      try {
+        await api(`/entities/${entity.id}/image`, "DELETE");
+        entity.image = null;
+        PICTURES.forget(entity.id);
+        await closeDialog();
+        toast(t("Picture removed. The photo stays in Argus."), "good");
+      } catch (error) {
+        remove.classList.remove("is-busy");
+        toast(error.message, "danger");
+      }
+    };
+    const toArgus = $("#pic-argus", d);
+    if (toArgus) toArgus.onclick = () => bridge("navigate", { module: "argus" }).catch((e) => toast(e.message, "danger"));
+    const recrop = $("#pic-recrop", d);
+    if (recrop) recrop.onclick = () => cropStep({ id: existing.photo_id }, existing.crop);
+  }
+  async function cropStep(photo, crop) {
+    const d = openDialog(`${head(t("Crop the picture"))}
+      <div class="ae-dialog-body pic-body"><div class="pic-crop">
+        <div class="pic-stage ${shape}" id="pic-stage" tabindex="0" role="application" aria-label="${esc(t("Crop area. Drag or use the arrow keys to move, plus and minus to zoom, 0 to reset."))}"><p class="muted">${esc(t("Loading the photo…"))}</p></div>
+        <div class="pic-side">
+          <label class="ae-label" for="pic-zoom">${esc(t("Zoom"))}</label>
+          <div class="pic-zoom">${icon("minus")}<input type="range" id="pic-zoom" min="1" max="6" step="0.01" value="1" disabled>${icon("plus")}</div>
+          <div class="ae-label">${esc(t("Preview"))}</div>
+          <div class="pic-previews"><canvas width="176" height="176" class="pic-prev xl ${shape}" aria-hidden="true"></canvas><canvas width="88" height="88" class="pic-prev md ${shape}" aria-hidden="true"></canvas><canvas width="68" height="68" class="pic-prev sm ${shape}" aria-hidden="true"></canvas></div>
+          <p class="ae-hint">${esc(t("Only the crop is saved in Meridian. The original photo stays untouched in Argus."))}</p>
+        </div></div><p class="form-error" id="form-error" hidden></p></div>
+      <div class="ae-dialog-foot"><button class="ae-btn ae-btn--quiet" id="pic-back">${esc(t("Choose another"))}</button><span class="spacer"></span><button class="ae-btn" id="pic-reset" disabled>${esc(t("Reset"))}</button><button class="ae-btn ae-btn--primary" id="pic-save" disabled>${esc(t("Save picture"))}</button></div>`, { wide: true });
+    $("#pic-back", d).onclick = chooseStep;
+    let preview;
+    try {
+      preview = await api(`/photo-preview/${photo.id}`);
+    } catch (error) {
+      preview = { status: "unavailable" };
+    }
+    const stage = $("#pic-stage", d);
+    if (!stage) return;
+    if (preview.status !== "available") {
+      stage.innerHTML = `<div class="pic-empty">${icon("alert")}<p>${esc(preview.status === "trashed" ? t("This photo is in Argus's Trash. Restore it there or choose another.") : preview.status === "deleted" || preview.status === "not_found" ? t("This photo no longer exists in Argus. Choose another.") : t("Argus could not render this photo right now."))}</p></div>`;
+      return;
+    }
+    const img = new Image();
+    img.alt = "";
+    img.draggable = false;
+    img.src = preview.src;
+    await img.decode().catch(() => {});
+    const W = img.naturalWidth || 1, H = img.naturalHeight || 1;
+    stage.innerHTML = "";
+    stage.append(img);
+    stage.insertAdjacentHTML("beforeend", `<span class="pic-mask" aria-hidden="true"></span>`);
+    const zoom = $("#pic-zoom", d);
+    const V = () => stage.clientWidth || 320;
+    // View state: zoom z ≥ 1 (1 = the shorter side fills the square), and the crop's
+    // top-left in normalised picture coordinates.
+    const view = { z: 1, x: 0, y: 0 };
+    const side = () => ({ w: Math.min(1, H / W) / view.z, h: Math.min(1, W / H) / view.z });
+    function clamp() {
+      const { w, h } = side();
+      view.x = Math.min(Math.max(view.x, 0), 1 - w);
+      view.y = Math.min(Math.max(view.y, 0), 1 - h);
+    }
+    function reset() {
+      view.z = 1;
+      const { w, h } = side();
+      view.x = (1 - w) / 2;
+      view.y = (1 - h) * (H > W ? 0.3 : 0.5); // portraits: faces sit high
+      draw();
+    }
+    function draw() {
+      clamp();
+      const { w, h } = side();
+      const v = V();
+      const dw = v / w, dh = v / h;
+      img.style.width = `${dw}px`;
+      img.style.height = `${dh}px`;
+      img.style.transform = `translate(${-view.x * dw}px, ${-view.y * dh}px)`;
+      zoom.value = String(view.z);
+      for (const c of $$(".pic-prev", d)) {
+        const ctx = c.getContext("2d");
+        ctx.clearRect(0, 0, c.width, c.height);
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, view.x * W, view.y * H, w * W, h * H, 0, 0, c.width, c.height);
+      }
+    }
+    if (crop && crop.w > 0) {
+      view.z = Math.max(1, Math.min(6, Math.min(1, H / W) / crop.w));
+      view.x = crop.x;
+      view.y = crop.y;
+      draw();
+    } else reset();
+    zoom.disabled = false;
+    $("#pic-reset", d).disabled = false;
+    $("#pic-save", d).disabled = false;
+    function zoomTo(z, cx = 0.5, cy = 0.5) {
+      const before = side();
+      const fx = view.x + before.w * cx, fy = view.y + before.h * cy;
+      view.z = Math.min(6, Math.max(1, z));
+      const after = side();
+      view.x = fx - after.w * cx;
+      view.y = fy - after.h * cy;
+      draw();
+    }
+    zoom.oninput = () => zoomTo(+zoom.value);
+    stage.onwheel = (e) => {
+      e.preventDefault();
+      const r = stage.getBoundingClientRect();
+      zoomTo(view.z * (e.deltaY < 0 ? 1.08 : 1 / 1.08), (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+    };
+    const pointers = new Map();
+    let pinch = null;
+    stage.onpointerdown = (e) => {
+      stage.setPointerCapture(e.pointerId);
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2) {
+        const [a, b] = [...pointers.values()];
+        pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y), z: view.z };
+      }
+    };
+    stage.onpointermove = (e) => {
+      const last = pointers.get(e.pointerId);
+      if (!last) return;
+      const now = { x: e.clientX, y: e.clientY };
+      pointers.set(e.pointerId, now);
+      if (pointers.size === 2 && pinch) {
+        const [a, b] = [...pointers.values()];
+        return zoomTo(pinch.z * (Math.hypot(a.x - b.x, a.y - b.y) / Math.max(1, pinch.dist)));
+      }
+      const { w, h } = side();
+      const v = V();
+      view.x -= ((now.x - last.x) / v) * w;
+      view.y -= ((now.y - last.y) / v) * h;
+      draw();
+    };
+    stage.onpointerup = stage.onpointercancel = (e) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinch = null;
+    };
+    stage.onkeydown = (e) => {
+      const { w, h } = side();
+      const step = e.shiftKey ? 0.1 : 0.02;
+      const keys = { ArrowLeft: () => (view.x -= w * step), ArrowRight: () => (view.x += w * step), ArrowUp: () => (view.y -= h * step), ArrowDown: () => (view.y += h * step) };
+      if (keys[e.key]) {
+        keys[e.key]();
+        draw();
+      } else if (e.key === "+" || e.key === "=") zoomTo(view.z * 1.1);
+      else if (e.key === "-" || e.key === "_") zoomTo(view.z / 1.1);
+      else if (e.key === "0") reset();
+      else return;
+      e.preventDefault();
+    };
+    new ResizeObserver(() => draw()).observe(stage);
+    $("#pic-reset", d).onclick = reset;
+    $("#pic-save", d).onclick = async (e) => {
+      const button = e.currentTarget;
+      button.classList.add("is-busy");
+      const { w, h } = side();
+      const r6 = (n) => Math.round(n * 1e6) / 1e6;
+      try {
+        const image = await api(`/entities/${entity.id}/image`, "PUT", { photo_id: photo.id, crop: { x: r6(view.x), y: r6(view.y), w: r6(w), h: r6(h) } });
+        entity.image = image;
+        PICTURES.forget(entity.id);
+        await closeDialog();
+        toast(t("Picture saved"), "good");
+        PICTURES.schedule();
+      } catch (error) {
+        button.classList.remove("is-busy");
+        showError(error);
+      }
+    };
+    stage.focus();
+  }
+  chooseStep();
+}
+/** A person's name as lists and pickers show it: "First Last" or "Last, First" (Settings → People). */
+const shownName = (x) => MeridianUX.listName(x, state.prefs.people_display);
 function personRow(p, end = "", attrs = "") {
   const second = [p.work, p.email || p.phone].filter(Boolean).join(" · ");
   return `<button class="row" data-act="open-person" data-id="${esc(p.id)}" ${attrs}>
     ${avatar(p.display_name, p.id, p.is_self ? "self" : "")}
-    <span class="grow"><span class="primary">${esc(p.display_name)}${p.is_self ? ' <span class="self-badge">@me</span>' : ""}</span>${second ? `<span class="secondary">${esc(second)}</span>` : ""}</span>
+    <span class="grow"><span class="primary">${esc(shownName(p))}${p.is_self ? ' <span class="self-badge">@me</span>' : ""}</span>${second ? `<span class="secondary">${esc(second)}</span>` : ""}</span>
     ${end}</button>`;
 }
 const KIND_LABEL = { birth: "Birthday", name_day: "Name day", anniversary: "Anniversary", death: "Death", custom: "Date" };
@@ -704,7 +1056,7 @@ function bindSearch(input, box) {
     const wasHidden = box.hidden;
     box.innerHTML = items.length
       ? `<div class="rows">${items.map((p, i) => personRow(p, "", `role="option" id="result-${i}" tabindex="-1" aria-selected="false"`)).join("")}</div>`
-      : `<p class="empty">${esc(t("No one matches “{q}”.", { q }))}</p>`;
+      : `<p class="empty">${esc(result.self_missing ? t("No one is marked as you yet. Choose who you are in Settings → You.") : t("No one matches “{q}”.", { q }))}</p>`;
     show(true);
     active = -1;
     if (wasHidden) animate(box, [{ opacity: 0, transform: "translateY(-4px)" }, { opacity: 1, transform: "none" }], MOTION.fast);
@@ -868,14 +1220,14 @@ function dirRow(x, q) {
   const when = state.people.sort === "created" ? t("Added {when}", { when: relativeTime(x.created_at) }) : t("Updated {when}", { when: relativeTime(x.updated_at) });
   return `<button class="row dir-row" data-act="open-person" data-id="${esc(x.id)}">
     ${avatar(x.display_name, x.id, x.is_self ? "self" : "")}
-    <span class="who"><span class="primary"><span class="nm">${highlight(x.display_name, q)}</span>${x.is_self ? ' <span class="self-badge">@me</span>' : ""}</span>${line ? `<span class="secondary">${line}</span>` : ""}</span>
+    <span class="who"><span class="primary"><span class="nm">${highlight(shownName(x), q)}</span>${x.is_self ? ' <span class="self-badge">@me</span>' : ""}</span>${line ? `<span class="secondary">${line}</span>` : ""}</span>
     <span class="reach">${x.email ? `<span class="reach-item">${icon("mail")}<span>${highlight(x.email, q)}</span></span>` : ""}${x.phone ? `<span class="reach-item">${icon("phone")}<span>${highlight(x.phone, q)}</span></span>` : ""}${!x.email && !x.phone ? `<span class="reach-item muted">${esc(t("No phone or email"))}</span>` : ""}</span>
     <span class="end">${esc(when)}</span></button>`;
 }
 function dirCard(x, q) {
   return `<button class="person-tile dir-card" data-act="open-person" data-id="${esc(x.id)}">
     ${avatar(x.display_name, x.id, `md ${x.is_self ? "self" : ""}`)}
-    <span class="grow"><span class="primary"><span class="nm">${highlight(x.display_name, q)}</span>${x.is_self ? ' <span class="self-badge">@me</span>' : ""}</span>
+    <span class="grow"><span class="primary"><span class="nm">${highlight(shownName(x), q)}</span>${x.is_self ? ' <span class="self-badge">@me</span>' : ""}</span>
       ${x.work ? `<span class="secondary">${highlight(x.work, q)}</span>` : x.preferred ? `<span class="secondary">${esc(t("Goes by {name}", { name: x.preferred }))}</span>` : ""}
       ${x.email ? `<span class="card-line">${icon("mail")}<span>${highlight(x.email, q)}</span></span>` : ""}
       ${x.phone ? `<span class="card-line">${icon("phone")}<span>${highlight(x.phone, q)}</span></span>` : ""}</span></button>`;
@@ -930,9 +1282,17 @@ const SECTION_KEYS = {
   employments: ["id", "organization", "organization_id", "title", "department", "role"],
   accounts: ["id", "service", "handle", "display_name", "url", "state"],
   facts: ["id", "key", "value"],
+  education: ["id", "organization", "organization_id", "kind", "department", "program", "field", "degree", "status", "achievements"],
+  interests: ["id", "category", "subject", "sentiment", "context", "target_kind", "target_ref"],
 };
 const COMMON = ["valid_from", "valid_until", "confidence", "note"];
-const NULLABLE = new Set(["valid_from", "valid_until", "confidence", "date"]);
+const NULLABLE = new Set(["valid_from", "valid_until", "confidence", "date", "target_ref"]);
+/* 0.7.0 (roadmap Phase 3): open vocabularies offered by the interface; any other word is kept. */
+const EDUCATION_KINDS = { primary_school: "Primary school", secondary_school: "Secondary school", university: "University", course: "Course", certification: "Certification", training: "Training", other: "Other" };
+const EDUCATION_STATUS = { studying: "Studying", graduated: "Graduated", dropped_out: "Dropped out", interrupted: "Interrupted", unknown: "Unknown" };
+const INTEREST_CATEGORIES = { hobbies: "Hobbies", sports: "Sports", music: "Music", films_tv: "Films and TV", books: "Books", games: "Games", art: "Art", technology: "Technology", science: "Science", history: "History", travel: "Travel", fashion: "Fashion", food: "Food and drink", vehicles: "Vehicles", collecting: "Collecting", communities: "Communities", topics: "Topics", other: "Other" };
+const SENTIMENTS = { favorite: "Favorite", loves: "Loves", likes: "Likes", preferred: "Prefers", neutral: "Neutral", dislikes: "Dislikes", avoids: "Avoids", hates: "Hates" };
+const vocab = (map, key) => (key ? t(map[key] || cap(String(key).replace(/_/g, " "))) : "");
 /** The editable document of a loaded person, in the shape the API accepts. */
 function editable(person) {
   const doc = { notes: person.notes || "", ...(person.kind && person.kind !== "person" ? { kind: person.kind } : {}) };
@@ -1018,7 +1378,7 @@ function personHeader(p) {
   const email = primary(p, "email");
   const phone = primary(p, "phone");
   return `<header class="profile-head">
-    ${avatar(p.display_name, p.id, `xl is-${p.kind} ${p.is_self ? "self" : ""}`)}
+    ${p.deleted_at ? avatar(p.display_name, p.id, `xl is-${p.kind} ${p.is_self ? "self" : ""}`) : `<button class="avatar-edit" data-act="pick-image" aria-label="${esc(p.image ? t("Change picture") : t("Add a picture"))}" title="${esc(p.image ? t("Change picture") : t("Add a picture"))}">${avatar(p.display_name, p.id, `xl is-${p.kind} ${p.is_self ? "self" : ""}`)}<span class="avatar-edit-badge" aria-hidden="true">${icon(p.image ? "edit" : "plus")}</span></button>`}
     <div class="identity"><h2 class="person-name" data-heading tabindex="-1">${esc(p.display_name)}${p.is_self ? '<span class="self-badge" title="' + esc(t("This is you")) + '">@me</span>' : ""}</h2>
       ${sub ? `<p class="profile-sub">${esc(sub)}</p>` : ""}
       ${meta.length ? `<p class="meta-line">${meta.join(DOT)}</p>` : ""}</div>
@@ -1098,7 +1458,10 @@ const PROFILE_SECTIONS = {
   person: [
     ["contacts", "Contact", "phone", "Phone or email"],
     ["employments", "Work", "briefcase", "Work"],
+    ["education", "Education", "school", "Education"],
     ["relationships", "Relationships", "link", "Relationship"],
+    ["interests", "Interests and preferences", "heart", "Interest or preference"],
+    ["interactions", "Interactions", "chat", "Interaction"],
     ["addresses", "Addresses", "pin", "Address"],
     ["accounts", "Online accounts", "at", "Online account"],
     ["notes", "Notes", "note", "Note"],
@@ -1106,7 +1469,9 @@ const PROFILE_SECTIONS = {
   ],
   organization: [
     ["work_here", "People at work here", "briefcase", ""],
+    ["studied_here", "People who studied here", "school", ""],
     ["relationships", "Relationships", "link", "Relationship"],
+    ["interactions", "Interactions", "chat", "Interaction"],
     ["contacts", "Contact", "phone", "Phone, email or website"],
     ["addresses", "Addresses", "pin", "Address"],
     ["accounts", "Online accounts", "at", "Online account"],
@@ -1116,6 +1481,7 @@ const PROFILE_SECTIONS = {
   group: [
     ["members", "Members", "people", "Member"],
     ["relationships", "Relationships", "link", "Relationship"],
+    ["interactions", "Interactions", "chat", "Interaction"],
     ["notes", "About", "note", "Description"],
     ["facts", "Other details", "info", "Detail"],
   ],
@@ -1155,7 +1521,8 @@ function relationRows(p) {
     html: connectionRow(r, {
       label: cap(t(r.phrase)),
       other: r.other,
-      extra: r.context ? `“${esc(r.context)}”` : "",
+      // The ordinary wording stays ("Sibling of"); how the kinship came about is the detail.
+      extra: [r.type === "parent" && r.kinship === "biological" ? "" : kinshipText(r.type, r.kinship), r.context ? `“${r.context}”` : ""].filter(Boolean).map(esc).join(" · "),
       act: act("edit", t("Edit relationship"), `data-act="edit-relation" data-id="${esc(r.id)}"`),
     }),
   }));
@@ -1204,10 +1571,53 @@ function workHereRows(p) {
     })),
   );
 }
+function studiedHereRows(p) {
+  return historyOrdered(
+    (p.studied_here || []).map((s) => {
+      const state = s.valid_until || !["studying", ""].includes(s.status || "") ? "former" : "current";
+      return {
+        r: { ...s, state },
+        html: connectionRow(
+          { ...s, record: "education", state },
+          { label: cap(vocab(EDUCATION_KINDS, s.kind) || t("Studied here")), other: { id: s.person_id, kind: "person", display_name: s.person_name, deleted: s.deleted }, extra: esc([s.program, s.field, s.degree, vocab(EDUCATION_STATUS, s.status)].filter(Boolean).join(" · ")), act: "" },
+        ),
+      };
+    }),
+  );
+}
+/** Education rows: school (or the kind when no school is known), what and how far. */
+function educationRows(p) {
+  return p.education.map((e) => {
+    const what = [e.program, e.field].filter(Boolean).join(", ") || e.degree || vocab(EDUCATION_KINDS, e.kind) || t("Education");
+    const sub = [what === e.degree ? "" : e.degree, vocab(EDUCATION_STATUS, e.status), e.department, e.achievements, recordSub(e)].filter(Boolean).join(" · ");
+    const open = e.organization_id ? act("external", t("Open {name}", { name: e.organization }), `data-act="open-entity" data-kind="organization" data-id="${esc(e.organization_id)}"`) : "";
+    const ended = !!e.valid_until || !["studying", ""].includes(e.status || "");
+    return vrow(e.organization || vocab(EDUCATION_KINDS, e.kind) || t("Education"), esc(what), { sub, former: ended, strong: true, acts: open });
+  });
+}
+/** Interests: current first, ordered by feeling; those with an end go under History. */
+function interestRows(p) {
+  const order = Object.keys(SENTIMENTS);
+  const rank = (i) => (order.includes(i.sentiment) ? order.indexOf(i.sentiment) : order.length);
+  const items = [...p.interests].sort((a, b) => !!a.valid_until - !!b.valid_until || rank(a) - rank(b));
+  return historyOrdered(
+    items.map((i) => ({
+      r: { state: i.valid_until ? "former" : "current" },
+      html: vrow(vocab(SENTIMENTS, i.sentiment) || t("Interested in"), esc(i.subject), {
+        sub: [vocab(INTEREST_CATEGORIES, i.category), i.context, recordSub(i)].filter(Boolean).join(" · "),
+        former: !!i.valid_until,
+        strong: i.sentiment === "favorite",
+      }),
+    })),
+  );
+}
 function overviewRows(p, key) {
   if (key === "relationships") return relationRows(p);
   if (key === "members") return memberRows(p);
   if (key === "work_here") return workHereRows(p);
+  if (key === "studied_here") return studiedHereRows(p);
+  if (key === "education") return educationRows(p);
+  if (key === "interests") return interestRows(p);
   if (key === "contacts")
     return ["phone", "email", "website"].flatMap((channel) =>
       p.contacts
@@ -1237,7 +1647,7 @@ function notesSection(p, title) {
   return `<section class="psection" data-section="notes"><div class="section-head"><h3>${icon("note")}${esc(title)}</h3><button class="ae-btn ae-btn--quiet ae-btn--sm" data-act="edit" data-section="notes" aria-label="${esc(t("Edit {section}", { section: title }))}">${icon("edit")}<span>${esc(t("Edit"))}</span></button></div><div class="list notes-body">${esc(p.notes)}</div></section>`;
 }
 /** Sections whose rows are records of their own, with their own add action. */
-const RECORD_SECTIONS = { relationships: "add-relation", members: "add-member" };
+const RECORD_SECTIONS = { relationships: "add-relation", members: "add-member", interactions: "add-interaction" };
 function connectionSection(key, title, iconName, rows, addLabel) {
   const count = rows.filter((r) => r.startsWith("<div")).length;
   return `<section class="psection" data-section="${key}"><div class="section-head"><h3>${icon(iconName)}${esc(title)} <span class="count">${count}</span></h3><button class="ae-btn ae-btn--quiet ae-btn--sm" data-act="${RECORD_SECTIONS[key]}">${icon("plus")}<span>${esc(t("Add {what}", { what: addLabel.toLowerCase() }))}</span></button></div><div class="list vrows">${rows.join("")}</div></section>`;
@@ -1251,11 +1661,16 @@ function tabOverview(p) {
       else missing.push([key, addLabel]);
       continue;
     }
+    if (key === "interactions") {
+      if (p.interaction_count) filled.push(`<div id="interactions-box" data-entity="${esc(p.id)}">${interactionsSection([], p.interaction_count)}</div>`);
+      else missing.push([key, addLabel]);
+      continue;
+    }
     const rows = overviewRows(p, key);
     if (rows.length)
       filled.push(
-        key === "work_here"
-          ? `<section class="psection" data-section="work_here"><div class="section-head"><h3>${icon(iconName)}${esc(t(title))} <span class="count">${rows.filter((r) => r.startsWith("<div")).length}</span></h3><span class="muted section-note">${esc(t("From each person’s Work"))}</span></div><div class="list vrows">${rows.join("")}</div></section>`
+        key === "work_here" || key === "studied_here"
+          ? `<section class="psection" data-section="${key}"><div class="section-head"><h3>${icon(iconName)}${esc(t(title))} <span class="count">${rows.filter((r) => r.startsWith("<div")).length}</span></h3><span class="muted section-note">${esc(t(key === "work_here" ? "From each person’s Work" : "From each person’s Education"))}</span></div><div class="list vrows">${rows.join("")}</div></section>`
           : RECORD_SECTIONS[key]
             ? connectionSection(key, t(title), iconName, rows, t(addLabel))
             : psection(key, t(title), iconName, rows),
@@ -1270,10 +1685,34 @@ function tabOverview(p) {
         <div class="add-chips">${missing.map(([key, label]) => `<button class="add-chip" data-act="${RECORD_SECTIONS[key] || "edit"}" data-section="${key}">${icon("plus")}<span>${esc(t(label))}</span></button>`).join("")}</div>
       </section>`
     : "";
+  setTimeout(() => loadLinkedFrom(p), 0);
+  if (p.interaction_count) setTimeout(() => loadInteractions(p), 0);
   return `<div class="profile-grid">
-    <div class="profile-main ${filled.length > 2 ? "is-rich" : ""}">${filled.join("")}${add}</div>
+    <div class="profile-main ${filled.length > 2 ? "is-rich" : ""}">${filled.join("")}<div id="linked-from" data-entity="${esc(p.id)}" hidden></div>${add}</div>
     ${glance(p)}
   </div>`;
+}
+/* Linked from other modules (0.6.0): Chronos events and Mnemosyne notes, tasks and projects
+   that link to this entity and share the link with Meridian. Their owners provide the titles;
+   Meridian stores none of them. Shown only when something links here. */
+const LINKED_KIND = { "chronos:event": "Event in Chronos", "mnemosyne:note": "Note in Mnemosyne", "mnemosyne:task": "Task in Mnemosyne", "mnemosyne:project": "Project in Mnemosyne", "mnemosyne:collection": "Collection in Mnemosyne", "atlas:place": "Place in Atlas", "argus:photo": "Photo in Argus" };
+const LINKED_ICON = { chronos: "calendar", mnemosyne: "note", atlas: "pin", argus: "people" };
+async function loadLinkedFrom(p) {
+  const box = $("#linked-from");
+  if (!box || box.dataset.entity !== p.id) return;
+  const result = await api(`/entities/${p.id}/linked-from`).catch(() => null);
+  if (!box.isConnected || state.person?.id !== p.id || !result || result.availability !== "available" || !result.items.length) return;
+  const rows = result.items.map((x) => {
+    const gone = x.availability !== "available";
+    const kind = t(LINKED_KIND[`${x.module}:${x.type}`] || "Linked in {module}", { module: cap(x.module) });
+    const note = x.availability === "deleted" ? t("deleted there") : ["forbidden", "not_found", "not_resolvable"].includes(x.availability) ? t("not available") : gone ? t("not available right now") : "";
+    const open = !gone && (state.context.applications || []).some((a) => a.id === x.module)
+      ? `<span class="acts">${act("external", t("Open {module}", { module: cap(x.module) }), `data-act="open-module" data-module="${esc(x.module)}" data-path="${esc(x.open_path || "")}"`)}</span>`
+      : "";
+    return `<div class="vrow linked-row${gone ? " former" : ""}"><span class="label">${icon(LINKED_ICON[x.module] || "link")}<span>${esc(kind)}</span></span><span class="value">${esc(gone ? t("Something linked here") : x.label)}${note ? `<span class="sub">${esc(note)}</span>` : ""}</span>${open}</div>`;
+  });
+  box.innerHTML = `<section class="psection" data-section="linked"><div class="section-head"><h3>${icon("link")}${esc(t("Linked from other modules"))} <span class="count">${rows.length}</span></h3></div><div class="list vrows">${rows.join("")}</div><p class="ae-hint linked-hint">${esc(t("These items belong to their modules."))}</p></section>`;
+  box.hidden = false;
 }
 /** Where a person's records came from, in words. */
 function provenance(p) {
@@ -1419,6 +1858,12 @@ function graphData(raw) {
     const type = raw.types[typeIndex];
     return { source: raw.nodes[a][0], target: raw.nodes[b][0], record: kind, type: type.key, category: type.category, label: type.label, inverse: type.inverse, symmetric: type.symmetric, state, conf };
   });
+  // An ended relationship that a current one of the same kind followed (dating, then engaged)
+  // is history: hidden under "All" so the current state reads clearly, still shown under
+  // "Ended" and in the pair's details. Concurrent relationships all stay.
+  const pair = (e) => [e.source, e.target].sort().join("|");
+  const live = new Set(edges.filter((e) => e.record === "r" && e.state !== 1).map((e) => `${pair(e)}|${e.category}`));
+  for (const e of edges) if (e.record === "r" && e.state === 1 && live.has(`${pair(e)}|${e.category}`)) e.superseded = true;
   return { nodes, edges };
 }
 /** One entity's neighbourhood, a few steps out, from the same data. */
@@ -1599,7 +2044,7 @@ function applyGraphFilter({ silent = false } = {}) {
   const cat = (l) => (l.record === "m" ? "membership" : l.record === "e" ? "employment" : l.category);
   GRAPH.engine?.applyFilter({
     node: (n) => f.kinds.has(n.kind) || n.id === GRAPH.local?.id,
-    link: (l) => (!f.categories || f.categories.has(cat(l))) && (f.time === "all" || (f.time === "current" ? l.state !== 1 : l.state === 1)),
+    link: (l) => (!f.categories || f.categories.has(cat(l))) && (f.time === "all" ? !l.superseded : f.time === "current" ? l.state !== 1 : l.state === 1),
     isolated: f.isolated,
   });
   const active = 3 - f.kinds.size + (f.categories ? 1 : 0) + (f.time !== "all" ? 1 : 0) + (f.isolated ? 0 : 1);
@@ -1942,14 +2387,14 @@ function typeOptions(anchorKind, targetKind, current) {
 /** Search-and-pick for People, Organizations and Groups, as a combobox. */
 function entityPicker(id, { kinds, label, value = null }) {
   return `<div class="picker" id="${id}" data-kinds="${kinds.join(",")}">
-    <input type="hidden" data-picked value="${esc(value?.id || "")}" data-kind="${esc(value?.kind || "")}">
+    <input type="hidden" data-picked value="${esc(value?.id || "")}" data-kind="${esc(value?.kind || "")}" data-name="${esc(value?.display_name || "")}">
     <div class="picker-chosen" ${value ? "" : "hidden"}>${value ? pickerChosen(value) : ""}</div>
     <div class="search-box picker-search" ${value ? "hidden" : ""}>${icon("search")}
       <input class="ae-input" type="search" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="${id}-results" aria-label="${esc(label)}" placeholder="${esc(label)}" maxlength="200" autocomplete="off">
       <div class="search-results" id="${id}-results" role="listbox" hidden></div></div></div>`;
 }
 function pickerChosen(e) {
-  return `${avatar(e.display_name, e.id, `sm is-${e.kind}`)}<span class="grow"><span class="primary">${esc(e.display_name)}</span><span class="secondary">${esc(t(KIND_NOUN[e.kind]))}</span></span><button class="ae-btn ae-btn--sm ae-btn--quiet" data-act="picker-change">${esc(t("Change"))}</button>`;
+  return `${avatar(e.display_name, e.id, `sm is-${e.kind}`)}<span class="grow"><span class="primary">${esc(shownName(e))}${e.is_self ? ` <span class="self-badge">${esc(t("Me"))}</span>` : ""}</span><span class="secondary">${esc(t(KIND_NOUN[e.kind]))}</span></span><button class="ae-btn ae-btn--sm ae-btn--quiet" data-act="picker-change">${esc(t("Change"))}</button>`;
 }
 function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
   const input = $(".picker-search input", root);
@@ -1971,6 +2416,7 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
     const hidden = $("[data-picked]", root);
     hidden.value = e.id;
     hidden.dataset.kind = e.kind;
+    hidden.dataset.name = e.display_name; // sentences use the natural name, lists the preferred form
     $(".picker-chosen", root).innerHTML = pickerChosen(e);
     $(".picker-chosen", root).hidden = false;
     $(".picker-search", root).hidden = true;
@@ -1983,6 +2429,7 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
     const hidden = $("[data-picked]", root);
     hidden.value = "";
     hidden.dataset.kind = "";
+    hidden.dataset.name = "";
     $(".picker-chosen", root).hidden = true;
     $(".picker-search", root).hidden = false;
     input.value = "";
@@ -1999,9 +2446,19 @@ function bindPicker(root, { exclude = [], onPick = () => {} } = {}) {
       const data = await api("/search" + query({ q, kinds: root.dataset.kinds })).catch(() => ({ entities: [] }));
       if (mine !== seq) return;
       items = data.entities.filter((e) => !exclude.includes(e.id));
+      // @me is the person marked as the user (Settings → You); say so when no one is, or when
+      // that person cannot be chosen here (this profile itself, or a picker for groups).
+      const empty =
+        data.alias === "me"
+          ? data.self_missing
+            ? t("No one is marked as you yet. Choose who you are in Settings → You.")
+            : data.entities.length
+              ? t("You can't be chosen here.")
+              : t("@me is a person, and only {kinds} can be chosen here.", { kinds: root.dataset.kinds.split(",").map((k) => t(KIND_NOUN[k]).toLowerCase()).join(", ") })
+          : t("No one matches “{q}”.", { q });
       box.innerHTML = items.length
-        ? `<div class="rows">${items.map((e, i) => `<button class="row" type="button" role="option" id="${root.id}-o${i}" aria-selected="false" data-pick="${i}" tabindex="-1">${avatar(e.display_name, e.id, `sm is-${e.kind}`)}<span class="grow"><span class="primary">${esc(e.display_name)}</span><span class="secondary">${esc(t(KIND_NOUN[e.kind]))}${e.work ? ` · ${esc(e.work)}` : ""}</span></span></button>`).join("")}</div>`
-        : `<p class="empty">${esc(t("No one matches “{q}”.", { q }))}</p>`;
+        ? `<div class="rows">${items.map((e, i) => `<button class="row" type="button" role="option" id="${root.id}-o${i}" aria-selected="false" data-pick="${i}" tabindex="-1">${avatar(e.display_name, e.id, `sm is-${e.kind}`)}<span class="grow"><span class="primary">${esc(shownName(e))}${e.is_self ? ` <span class="self-badge">${esc(t("Me"))}</span>` : ""}</span><span class="secondary">${esc(t(KIND_NOUN[e.kind]))}${e.work ? ` · ${esc(e.work)}` : ""}</span></span></button>`).join("")}</div>`
+        : `<p class="empty">${esc(empty)}</p>`;
       active = -1;
       show(true);
     }, 150),
@@ -2060,6 +2517,7 @@ function knowledgeFields(r = {}) {
 }
 /** Open the panel shell with any body; the regular editors use openPanel(). */
 function openShell(section, { eyebrow, title, body, foot = "" }) {
+  panel.session = null;
   const html = `<div class="panel-head"><div><p class="eyebrow">${esc(eyebrow)}</p><h2 id="panel-title">${esc(title)}</h2></div><button class="ae-btn ae-btn--quiet ae-btn--icon" data-act="panel-close" aria-label="${esc(t("Close"))}">${icon("x")}</button></div>
     <div class="panel-body" id="panel-body">${body}</div>
     <div class="panel-foot"><p class="form-error" id="form-error" role="alert" hidden></p><div class="buttons">${foot}<span class="dirty" id="panel-dirty" aria-live="polite"></span><button class="ae-btn" data-act="panel-close">${esc(t("Cancel"))}</button><button class="ae-btn ae-btn--primary" data-act="panel-save">${esc(t("Save"))}</button></div></div>`;
@@ -2085,6 +2543,8 @@ async function openRelation(record, invoker) {
   relEditor.record = record;
   relEditor.anchor = p;
   relEditor.allowSimilar = false;
+  relEditor.suggested = null; // the start date last suggested, while the user has not changed it
+  relEditor.ends = null; // ongoing relationships the user chose to end (creation only)
   panel.invoker = invoker && invoker.isConnected ? invoker : panel.invoker;
   const other = record?.other || null;
   const value = record ? `${record.type}|${record.direction}` : "";
@@ -2096,6 +2556,7 @@ async function openRelation(record, invoker) {
         <div class="ae-field"><label class="ae-label" for="rel-type">${esc(t("Relationship"))}</label><select class="ae-select" id="rel-type">${typeOptions(p.kind, other?.kind, value)}</select></div>
         <div class="ae-field"><span class="ae-label" id="rel-target-label">${esc(t("Of whom"))}</span>${entityPicker("rel-target", { kinds: ["person", "organization", "group"], label: t("Search people, organizations and groups"), value: other })}</div>
       </div>
+      <div class="ae-field rel-kinship" id="rel-kinship-wrap" hidden><label class="ae-label" for="rel-kinship" id="rel-kinship-label"></label><select class="ae-select" id="rel-kinship" data-initial="${esc(record ? record.kinship || "" : "new")}"></select><p class="ae-hint" id="rel-kinship-hint"></p></div>
       <div id="rel-custom" class="rel-custom" hidden>
         <div class="ae-field"><label class="ae-label" for="rel-c-label">${esc(t("In words, from this side"))}</label><input class="ae-input" id="rel-c-label" maxlength="60" placeholder="${esc(t("e.g. “godparent of”"))}"></div>
         <div class="ae-field"><label class="ae-label" for="rel-c-inverse">${esc(t("From the other side (optional)"))}</label><input class="ae-input" id="rel-c-inverse" maxlength="60" placeholder="${esc(t("e.g. “godchild of” — empty if it reads the same both ways"))}"></div>
@@ -2104,20 +2565,115 @@ async function openRelation(record, invoker) {
       <p class="rel-reads" id="rel-reads" aria-live="polite"></p>
       <div class="ae-field"><label class="ae-label" for="rel-context">${esc(t("In your own words (optional)"))}</label><input class="ae-input" id="rel-context" maxlength="80" value="${esc(record?.context || "")}" placeholder="${esc(t("e.g. “best friend”, “maternal grandmother”"))}"></div>
       ${periodFields(record || {})}
+      <p class="ae-hint rel-suggest" id="rel-suggest" aria-live="polite" hidden></p>
       ${knowledgeFields(record || {})}
       <div id="rel-similar" hidden></div>`,
     foot: record ? `<button class="ae-btn ae-btn--quiet is-danger" data-act="rel-remove">${icon("trash")}<span>${esc(t("Remove"))}</span></button>${record.state !== "former" ? `<button class="ae-btn ae-btn--quiet" data-act="rel-end">${esc(t("End it"))}</button>` : ""}` : "",
   });
   const picker = $("#rel-target");
-  bindPicker(picker, { exclude: [p.id], onPick: () => refreshTypeOptions() });
+  bindPicker(picker, {
+    exclude: [p.id],
+    onPick: () => {
+      refreshTypeOptions();
+      relKinship();
+      relSuggest();
+    },
+  });
   $("#rel-type").addEventListener("change", () => {
     $("#rel-custom").hidden = $("#rel-type").value !== "custom";
     readsLine();
+    relKinship();
+    relSuggest();
   });
+  $("#rel-kinship").addEventListener("change", () => {
+    relKinshipHint();
+    relSuggest();
+  });
+  relKinship();
   ["rel-c-label", "rel-c-inverse", "rel-context"].forEach((id) => $(`#${id}`).addEventListener("input", readsLine));
   readsLine();
   panel.snapshot = formState();
   (record ? $("#rel-type") : $(".picker-search input", picker))?.focus({ preventScroll: true });
+}
+/* Kinship origin (parent and sibling relationships): kept on the record, shown in details. */
+const KINSHIP_CHOICES = {
+  parent: { label: "Parenthood", options: { biological: "Biological", adoptive: "Adoptive", step: "Step-parent", "": "Not specified" } },
+  sibling: { label: "Kind of siblings", options: { biological_full: "Full siblings", biological_half: "Half-siblings", biological: "Biological — full or half not known", adoptive: "Through adoption", step: "Step-siblings", "": "Not specified" } },
+};
+const KINSHIP_TEXT = {
+  parent: { biological: "biological", adoptive: "adoptive", step: "step-parent" },
+  sibling: { biological_full: "full siblings", biological_half: "half-siblings", biological: "biological siblings", adoptive: "siblings through adoption", step: "step-siblings" },
+};
+const kinshipText = (type, kinship) => (kinship && KINSHIP_TEXT[type]?.[kinship] ? t(KINSHIP_TEXT[type][kinship]) : "");
+const relTypeKey = () => ($("#rel-type")?.value || "").split("|")[0];
+/** Show the kinship control for parent and sibling relationships, keeping any choice made. */
+function relKinship() {
+  const wrap = $("#rel-kinship-wrap");
+  if (!wrap) return;
+  const key = relTypeKey();
+  const spec = KINSHIP_CHOICES[key];
+  wrap.hidden = !spec;
+  if (!spec) return;
+  const select = $("#rel-kinship");
+  const initial = select.dataset.initial;
+  const keep = select.dataset.type === key ? select.value : initial === "new" ? (key === "parent" ? "biological" : "") : initial;
+  select.dataset.type = key;
+  $("#rel-kinship-label").textContent = t(spec.label);
+  const chosen = keep in spec.options ? keep : "";
+  select.innerHTML = Object.entries(spec.options)
+    .map(([v, l]) => `<option value="${v}" ${v === chosen ? "selected" : ""}>${esc(t(l))}</option>`)
+    .join("");
+  relKinshipHint();
+}
+function relKinshipHint() {
+  const hint = $("#rel-kinship-hint");
+  if (!hint) return;
+  const key = relTypeKey();
+  const v = $("#rel-kinship").value;
+  let text = "";
+  if (key === "parent" && v === "adoptive") text = t("Adoptive parenthood has its own dates and never replaces a biological parent.");
+  else if (key === "parent" && v === "step") text = t("A parent's partner. Step-parents are not used to suggest siblings.");
+  else if (key === "sibling") text = t("Shown as “sibling of”; the kind is kept in the details.");
+  hint.textContent = text;
+  hint.hidden = !text;
+}
+const relKinshipValue = () => ($("#rel-kinship-wrap")?.hidden !== false ? null : $("#rel-kinship").value || null);
+function setDateInput(root, value) {
+  let y = "", m = "", d = "";
+  if (value?.startsWith("--")) [m, d] = [value.slice(2, 4), value.slice(5, 7)];
+  else if (value) [y, m, d] = value.split("-");
+  $("[data-part=y]", root).value = y || "";
+  $("[data-part=m]", root).value = m || "";
+  $("[data-part=d]", root).value = d ? String(+d) : "";
+}
+let relSuggestSeq = 0;
+/** For a new parent relationship, offer the child's birth date as Since: shown, editable, and
+    never written over a date the user entered. Until is never suggested. */
+async function relSuggest() {
+  const hint = $("#rel-suggest");
+  if (!hint || relEditor.record) return;
+  const mine = ++relSuggestSeq;
+  const [key, dir] = ($("#rel-type").value || "").split("|");
+  const targetId = $("#rel-target [data-picked]").value;
+  const anchor = relEditor.anchor;
+  let info = {};
+  if (key === "parent" && targetId) {
+    const ids = dir === "in" ? { subject_id: targetId, object_id: anchor.id } : { subject_id: anchor.id, object_id: targetId };
+    info = await api("/relationship-suggestion" + query({ ...ids, type: key, kinship: relKinshipValue() || "" })).catch(() => ({}));
+    if (mine !== relSuggestSeq || !$("#rel-suggest")) return;
+  }
+  const next = info.valid_from || null;
+  const widget = $('[data-date="rel-from"]');
+  const read = readDate(widget);
+  const current = read.error ? "?" : read.value || null;
+  const value = MeridianUX.takeSuggestion(current, relEditor.suggested, next);
+  const userDate = current && current !== relEditor.suggested;
+  if (!userDate && value !== current) setDateInput(widget, value);
+  if (!userDate) relEditor.suggested = next;
+  hint.hidden = !next || userDate;
+  if (next && !userDate) hint.textContent = t(info.approximate ? "Since is set to {name}’s approximate birth date. Change it if the relationship began at another time." : "Since is set to {name}’s birth date. Change it if the relationship began at another time.", { name: info.child?.display_name || "" });
+  const dirty = $("#panel-dirty");
+  if (dirty) dirty.textContent = panel.isDirty() ? t("Unsaved changes") : "";
 }
 function refreshTypeOptions() {
   const select = $("#rel-type");
@@ -2134,7 +2690,7 @@ function readsLine() {
   if (!line) return;
   const value = $("#rel-type").value;
   const target = $("#rel-target [data-picked]");
-  const name = $("#rel-target .picker-chosen .primary")?.textContent;
+  const name = target.dataset.name;
   if (!value || !target.value || !name) return (line.textContent = "");
   const me = relEditor.anchor.display_name;
   let phrase;
@@ -2185,23 +2741,162 @@ async function saveRelation(button, allowSimilar = false) {
       note: $("#rel-note").value.trim(),
       sources: readSources(),
       allow_similar: allowSimilar,
+      kinship: relKinshipValue(),
     };
     button.classList.add("is-busy");
     const record = relEditor.record;
+    relEditor.allowSimilar = allowSimilar;
     if (!allowSimilar) {
-      const check = await api("/similar-relationships" + query({ subject_id: body.subject_id, object_id: body.object_id, type, exclude: record?.id || "" }));
+      const check = await api("/similar-relationships" + query({ subject_id: body.subject_id, object_id: body.object_id, type, exclude: record?.id || "", kinship: body.kinship || "" }));
       if (check.similar.length) {
         button.classList.remove("is-busy");
         return showSimilar(check.similar);
       }
     }
-    await api(record ? `/relationships/${record.id}` : "/relationships", record ? "PUT" : "POST", body);
-    await afterConnectionSave("relationships", t("Relationship saved"));
+    // A new relationship between two who already have an ongoing one: ask before saving.
+    if (!record && relEditor.ends === null) {
+      const { active } = await api("/active-relationships" + query({ subject_id: body.subject_id, object_id: body.object_id, type }));
+      if (active.length) {
+        button.classList.remove("is-busy");
+        return showTransition(active, body);
+      }
+    }
+    if (!record && relEditor.ends?.length) body.end_relationships = relEditor.ends;
+    const saved = await api(record ? `/relationships/${record.id}` : "/relationships", record ? "PUT" : "POST", body);
+    const ended = body.end_relationships?.length || 0;
+    await afterConnectionSave("relationships", ended ? plural(ended, "Relationship saved; {count} ended", "Relationship saved; {count} ended") : t("Relationship saved"));
+    if (type === "parent") await offerSiblings(saved.id);
   } catch (error) {
-    button.classList.remove("is-busy");
+    relEditor.ends = null; // ask again next time: the data may have changed meanwhile
+    button?.classList.remove("is-busy");
+    if (!panel.el()) return toast(error.message, "danger");
     box.textContent = error.message;
     box.hidden = false;
     animate(box, [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], MOTION.fast);
+  }
+}
+/** Ongoing relationships between the same two: end some, keep all, or go back. Nothing changes
+    until the new relationship is saved, and then everything is saved together. */
+function showTransition(active, body) {
+  const preselected = new Set(MeridianUX.preselectedEnds(active));
+  const tp = REL_TYPES.types.find((x) => x.key === body.type);
+  const sentence = (r) => `${r.subject.display_name} ${t(r.label)} ${r.object.display_name}`;
+  const rows = active
+    .map((r) => {
+      const facts = [period(r) || t("start not recorded"), r.state === "unknown" ? t("whether it continues is not recorded") : t("no end date"), r.context ? `“${r.context}”` : ""].filter(Boolean).join(" · ");
+      return `<label class="tr-row"><input type="checkbox" class="ae-check" data-end="${esc(r.id)}" ${preselected.has(r.id) ? "checked" : ""}><span class="grow"><span class="primary">${esc(sentence(r))}</span><span class="secondary">${esc(facts)}</span></span></label>`;
+    })
+    .join("");
+  const other = $("#rel-target [data-picked]").dataset.name || "";
+  openDialog(
+    `<div class="ae-dialog-head"><h2 id="tr-title">${esc(t("Still going on?"))}</h2></div>
+    <div class="ae-dialog-body tr-body"><p class="muted" style="margin-top:0">${esc(t(active.length === 1 ? "{a} and {b} already have a relationship with no end date. You are adding “{phrase}”." : "{a} and {b} already have {n} relationships with no end date. You are adding “{phrase}”.", { a: relEditor.anchor.display_name, b: other, phrase: t(tp?.label || body.type), n: active.length }))}</p>
+      <fieldset class="tr-list"><legend class="ae-label">${esc(t("End any of these when the new one begins?"))}</legend>${rows}</fieldset>
+      <div class="ae-field tr-date"><span class="ae-label">${esc(t("Ended on"))}</span>${dateInput("tr-until", body.valid_from)}<p class="ae-hint">${esc(t("Leave it empty if you don't know; nothing is guessed. Ended relationships stay in their history."))}</p></div>
+      <p class="form-error" id="tr-error" role="alert" hidden></p></div>
+    <div class="ae-dialog-foot tr-foot"><button class="ae-btn" data-act="tr-cancel">${esc(t("Cancel"))}</button><button class="ae-btn" data-act="tr-keep">${esc(t("Keep all and save"))}</button><button class="ae-btn ae-btn--primary" data-act="tr-end">${esc(t("End selected and save"))}</button></div>`,
+    { wide: true },
+  );
+  const d = dialog();
+  d.setAttribute("aria-labelledby", "tr-title");
+  const sync = () => {
+    const any = $$("[data-end]:checked", d).length > 0;
+    $('[data-act="tr-end"]', d).disabled = !any;
+    $(".tr-date", d).hidden = !any;
+  };
+  d.onchange = sync;
+  sync();
+  ($('[data-act="tr-end"]:not(:disabled)', d) || $('[data-act="tr-keep"]', d)).focus();
+  relEditor.transitionActive = active;
+}
+async function finishTransition(choice) {
+  const d = dialog();
+  d.onchange = null;
+  const save = $('#panel [data-act="panel-save"]');
+  if (choice === "cancel") {
+    relEditor.ends = null;
+    await closeDialog();
+    return save?.focus();
+  }
+  let ends = [];
+  if (choice === "end") {
+    const until = readDate($('[data-date="tr-until"]', d));
+    const chosen = $$("[data-end]:checked", d).map((el) => el.dataset.end);
+    let problem = until.error || "";
+    if (!problem && until.value?.startsWith("--")) problem = t("Add a year to the end date, or leave it empty.");
+    if (!problem && relEditor.transitionActive.some((r) => chosen.includes(r.id) && !MeridianUX.endFits(r.valid_from, until.value))) problem = t("The end date is before one of these relationships began.");
+    if (problem) {
+      const error = $("#tr-error", d);
+      error.textContent = problem;
+      error.hidden = false;
+      d.onchange = () => (error.hidden = true);
+      return;
+    }
+    ends = chosen.map((id) => ({ id, valid_until: until.value || null }));
+  }
+  relEditor.ends = ends;
+  await closeDialog();
+  return saveRelation(save, relEditor.allowSimilar);
+}
+/* After a parent relationship is saved: the siblings its recorded parents point to, confirmed or
+   declined together in one dialog. Nothing is created without the user's answer. */
+const SIBLING_REASON = {
+  two_biological: "Both have {parents} as biological parents.",
+  one_biological_other_different: "Both have {parents} as a biological parent; their other biological parents are different people.",
+  one_biological_other_unknown: "Both have {parents} as a biological parent. Whether they share their other parent is not recorded.",
+  adoptive: "{parents} is an adoptive parent of at least one of them.",
+  unspecified: "Both have {parents} as a parent; the kind of parenthood is not recorded.",
+};
+async function offerSiblings(relationshipId) {
+  let data;
+  try {
+    data = await api("/sibling-suggestions" + query({ relationship: relationshipId }));
+  } catch {
+    return; // only a suggestion: the relationship itself is saved
+  }
+  const list = data.suggestions;
+  if (!list.length) return;
+  const names = (people) => people.map((x) => x.display_name).join(t(" and "));
+  const rows = list
+    .map((s, i) => {
+      const { options, preselected } = MeridianUX.siblingChoices(s);
+      const now = s.action === "update" ? t("Recorded now as {kind}.", { kind: kinshipText("sibling", s.current_kinship) || t("siblings, without details") }) + " " : "";
+      const question = s.action === "update" ? t("Update their sibling relationship?") : t("Are {a} and {b} siblings?", { a: s.a.display_name, b: s.b.display_name });
+      return `<li class="sib-row"><div class="sib-who">${avatar(s.a.display_name, s.a.id, "sm")}<span class="nm">${esc(shownName(s.a))}</span><span class="sib-and" aria-hidden="true">&amp;</span>${avatar(s.b.display_name, s.b.id, "sm")}<span class="nm">${esc(shownName(s.b))}</span></div>
+        <p class="sib-why">${esc(now + t(SIBLING_REASON[s.reason] || SIBLING_REASON.unspecified, { parents: names(s.shared_parents) }))}</p>
+        <div class="ae-field"><label class="ae-label" for="sib-${i}">${esc(question)}</label><select class="ae-select" id="sib-${i}" data-sib="${i}">${options.map((o) => `<option value="${esc(o.value)}" ${o.value === preselected ? "selected" : ""}>${esc(t(o.label))}</option>`).join("")}</select></div></li>`;
+    })
+    .join("");
+  relEditor.siblings = list;
+  openDialog(
+    `<div class="ae-dialog-head"><h2 id="sib-title">${esc(list.length === 1 ? t("Possible sibling") : t("Possible siblings"))}</h2></div>
+    <div class="ae-dialog-body"><p class="muted" style="margin-top:0">${esc(t("The parents recorded for {name} suggest these sibling relationships. Nothing is saved until you confirm.", { name: data.child.display_name }))}</p><ul class="sib-list">${rows}</ul><p class="form-error" id="sib-error" role="alert" hidden></p></div>
+    <div class="ae-dialog-foot"><button class="ae-btn" data-act="sib-cancel">${esc(t("Not now"))}</button><button class="ae-btn ae-btn--primary" data-act="sib-save">${esc(t("Save answers"))}</button></div>`,
+    { wide: true },
+  );
+  dialog().setAttribute("aria-labelledby", "sib-title");
+}
+async function saveSiblings(button) {
+  const d = dialog();
+  const list = relEditor.siblings || [];
+  const items = MeridianUX.siblingItems(list, list.map((_, i) => $(`[data-sib="${i}"]`, d)?.value));
+  if (!items.length) return closeDialog();
+  button.classList.add("is-busy");
+  try {
+    const done = await api("/sibling-suggestions/apply", "POST", { items });
+    await closeDialog();
+    const n = done.created + done.updated;
+    toast(n ? plural(n, "{count} sibling relationship saved", "{count} sibling relationships saved") : t("Already recorded"), n ? "good" : "");
+    if (state.person && ["person", "entity"].includes(state.route.view)) {
+      state.person = await api(entityApi(state.person));
+      refreshPerson();
+    }
+    refreshCounts();
+  } catch (error) {
+    button.classList.remove("is-busy");
+    const box = $("#sib-error", d);
+    box.textContent = error.message;
+    box.hidden = false;
   }
 }
 /** A similar relationship exists: show it, and let the user decide with full knowledge. */
@@ -2338,6 +3033,38 @@ const EDITORS = {
     ],
     more: ["confidence", "note"],
   },
+  education: {
+    title: "Education",
+    add: "Add school, course or training",
+    blank: () => ({ organization: "", kind: "university", status: "" }),
+    fields: [
+      { k: "organization", label: "School or institution", type: "text", max: 200 },
+      { k: "kind", label: "Kind", type: "kind", options: Object.keys(EDUCATION_KINDS), names: EDUCATION_KINDS },
+      { k: "program", label: "Program", type: "text", max: 200 },
+      { k: "field", label: "Field of study", type: "text", max: 200 },
+      { k: "degree", label: "Degree or qualification", type: "text", max: 200, placeholder: "e.g. MSc, A-levels, certificate" },
+      { k: "status", label: "Status", type: "kind", options: ["", ...Object.keys(EDUCATION_STATUS)], names: { "": "Not recorded", ...EDUCATION_STATUS } },
+      { k: "valid_from", label: "From", type: "partial" },
+      { k: "valid_until", label: "Until", type: "partial" },
+      { k: "department", label: "School, faculty or department", type: "text", max: 200 },
+      { k: "achievements", label: "Achievements", type: "text", max: 2000 },
+    ],
+    more: ["confidence", "note"],
+  },
+  interests: {
+    title: "Interests and preferences",
+    add: "Add interest or preference",
+    blank: () => ({ subject: "", category: "hobbies", sentiment: "likes" }),
+    fields: [
+      { k: "subject", label: "What", type: "text", max: 300, placeholder: "e.g. chess, Radiohead, spicy food" },
+      { k: "sentiment", label: "Feeling", type: "kind", options: Object.keys(SENTIMENTS), names: SENTIMENTS },
+      { k: "category", label: "Category", type: "kind", options: Object.keys(INTEREST_CATEGORIES), names: INTEREST_CATEGORIES },
+      { k: "context", label: "When or where (optional)", type: "text", max: 300, placeholder: "e.g. with dinner, when urgent" },
+      { k: "target_kind", type: "hidden" },
+      { k: "target_ref", type: "hidden" },
+    ],
+    more: ["valid_from", "valid_until", "confidence", "note"],
+  },
   accounts: {
     title: "Online accounts",
     add: "Add account",
@@ -2395,7 +3122,7 @@ const EDITORS = {
   },
 };
 const PANEL_ORDER = {
-  person: ["contacts", "dates", "employments", "accounts", "addresses", "names", "facts", "notes"],
+  person: ["contacts", "dates", "employments", "education", "interests", "accounts", "addresses", "names", "facts", "notes"],
   organization: ["names", "contacts", "addresses", "accounts", "dates", "facts", "notes"],
   group: ["names", "dates", "facts", "notes"],
 };
@@ -2412,6 +3139,8 @@ const DATALISTS = `<datalist id="contact-labels">${[...new Set(Object.values(LAB
   <datalist id="services">${["github", "linkedin", "instagram", "facebook", "x", "mastodon", "signal", "telegram", "whatsapp", "matrix", "xmpp", "skype", "youtube", "tiktok"].map((s) => `<option value="${s}">`).join("")}</datalist>`;
 function control(f, value, uid) {
   const id = `f-${uid}-${f.k}`;
+  // Kept as it is (a reserved cross-module target): not editable here, never dropped on save.
+  if (f.type === "hidden") return `<input type="hidden" data-k="${f.k}" value="${esc(value ?? "")}">`;
   const label = `<label class="ae-label" for="${id}">${esc(t(f.label))}</label>`;
   if (f.type === "check") return `<label class="check-line"><input type="checkbox" id="${id}" data-k="${f.k}" ${value ? "checked" : ""}> ${esc(t(f.label))}</label>`;
   if (f.type === "date") return `<div class="ae-field" style="grid-column:1 / -1"><span class="ae-label">${esc(t(f.label))}</span>${dateInput(f.k, value)}</div>`;
@@ -2459,31 +3188,28 @@ function readRow(row, spec, index) {
   return record;
 }
 
-/**
- * The side panel is Meridian's single editing pattern: one section at a time, beside the
- * profile, with explicit Save and Cancel. Its contents are compared with what it opened
- * with, so closing, switching sections, changing tabs or navigating never drops edits
- * without asking.
- */
+/** Contact tabs retain their form nodes, including incomplete and invalid input. */
 const panel = {
   section: null,
+  session: null,
+  saving: false,
   snapshot: "",
   invoker: null,
   closing: null,
   el: () => $("#panel"),
   isDirty() {
+    if (this.session && this.el() && !this.closing) return [...this.session.panes.values()].some((pane) => formState(pane.node) !== pane.snapshot);
     // An event's participants live outside the form fields, so they count as well.
-    return !!this.el() && !this.closing && (this.section === "event" ? formState() + JSON.stringify(evEditor.participants) : formState()) !== this.snapshot;
+    return !!this.el() && !this.closing && (this.section === "interaction" ? ixState() : this.section === "event" ? formState() + JSON.stringify(evEditor.participants) : formState()) !== this.snapshot;
   },
 };
 const rowState = (row) => JSON.stringify($$("input, select, textarea", row).map((el) => (el.type === "checkbox" ? el.checked : el.value)));
-function formState() {
-  const body = $("#panel-body");
+function formState(body = $("#panel-body")) {
   if (!body) return "";
   return JSON.stringify($$("[data-row], input, select, textarea", body).map((el) => (el.matches("[data-row]") ? `row:${el.dataset.id}` : el.type === "checkbox" ? el.checked : el.value)));
 }
 function panelBody(section) {
-  const p = state.person;
+  const p = panel.session?.person || state.person;
   if (section === "notes")
     return `<div class="ae-field" style="padding-top:18px"><label class="ae-label" for="notes">${esc(t("Notes about {name}", { name: p.display_name }))}</label><textarea class="ae-textarea" id="notes" rows="14" maxlength="20000">${esc(p.notes)}</textarea></div>`;
   const spec = EDITORS[section];
@@ -2496,17 +3222,22 @@ function panelBody(section) {
     ${section === "contacts" ? `<p class="ae-hint" style="margin-top:14px">${esc(t("No longer used? Set “Until” under Period instead of removing it — Meridian keeps it as a former value."))}</p>` : ""}`;
 }
 async function openPanel(section, invoker) {
-  if (panel.el() && panel.section === section) return;
+  if (panel.saving) return;
+  if (panel.session && panel.el()) {
+    showContactTab(section);
+    return;
+  }
   if (panel.isDirty() && !(await confirmDiscard())) return;
   const existing = panel.el();
   panel.section = section;
   panel.invoker = invoker && invoker.isConnected ? invoker : panel.invoker;
   const p = state.person;
+  panel.session = { person: structuredClone(p), panes: new Map() };
   const chips = PANEL_ORDER[p.kind || "person"].map((s) => `<button class="ae-chip ${s === section ? "is-active" : ""}" data-act="panel-section" data-section="${s}" aria-pressed="${s === section}">${esc(panelTitle(s))}</button>`).join("");
   const html = `<div class="panel-head"><div><p class="eyebrow">${esc(p.display_name)}</p><h2 id="panel-title">${esc(panelTitle(section))}</h2></div><button class="ae-btn ae-btn--quiet ae-btn--icon" data-act="panel-close" aria-label="${esc(t("Close"))}">${icon("x")}</button></div>
     <nav class="panel-sections" aria-label="${esc(t("Sections to edit"))}">${chips}</nav>
-    <div class="panel-body" id="panel-body">${panelBody(section)}</div>
-    <div class="panel-foot"><p class="form-error" id="form-error" role="alert" hidden></p><div class="buttons"><span class="dirty" id="panel-dirty" aria-live="polite"></span><button class="ae-btn" data-act="panel-close">${esc(t("Cancel"))}</button><button class="ae-btn ae-btn--primary" data-act="panel-save">${esc(t("Save"))}</button></div></div>`;
+    <div class="panel-body" id="panel-body"></div>
+    <div class="panel-foot"><p class="form-error" id="form-error" role="alert" hidden></p><div class="buttons"><span class="dirty" id="panel-dirty" aria-live="polite"></span><button class="ae-btn" data-act="panel-cancel">${esc(t("Cancel"))}</button><button class="ae-btn ae-btn--primary" data-act="panel-save">${esc(t("Save"))}</button></div></div>`;
   if (existing) {
     existing.innerHTML = html;
     animate($("#panel-body"), [{ opacity: 0 }, { opacity: 1 }], MOTION.fast);
@@ -2518,13 +3249,70 @@ async function openPanel(section, invoker) {
     $("#app").setAttribute("aria-hidden", "true");
     $("#app").inert = true;
   }
-  $$("[data-starter]").forEach((row) => (row.dataset.starter = rowState(row)));
-  panel.snapshot = formState();
+  showContactTab(section);
   ($("#panel-body input:not([type=checkbox]), #panel-body select, #panel-body textarea") || $('[data-act="panel-save"]'))?.focus({ preventScroll: true });
+}
+function showContactTab(section) {
+  const session = panel.session;
+  if (!session || !PANEL_ORDER[session.person.kind || "person"].includes(section)) return;
+  let pane = session.panes.get(section);
+  if (!pane) {
+    const node = document.createElement("div");
+    node.innerHTML = panelBody(section);
+    $$("[data-starter]", node).forEach((row) => (row.dataset.starter = rowState(row)));
+    pane = { node, snapshot: formState(node), scroll: 0 };
+    session.panes.set(section, pane);
+  }
+  const body = $("#panel-body");
+  const previous = session.panes.get(panel.section);
+  if (previous) previous.scroll = body.scrollTop;
+  panel.section = section;
+  body.replaceChildren(pane.node);
+  body.scrollTop = pane.scroll;
+  $("#panel-title").textContent = panelTitle(section);
+  $$("[data-act=panel-section]", panel.el()).forEach((tab) => {
+    const active = tab.dataset.section === section;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-pressed", String(active));
+  });
+  updateContactStatus();
+}
+function updateContactStatus() {
+  if (!panel.session) return;
+  const dirty = panel.isDirty();
+  $("#panel-dirty").textContent = dirty ? t("Unsaved changes") : "";
+  const button = $('[data-act="panel-save"]', panel.el());
+  button.disabled = !dirty || panel.saving;
+  button.classList.toggle("is-busy", panel.saving);
+  button.textContent = t("Save");
+}
+function confirmContactClose() {
+  if (panel.saving) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let answered = false;
+    const answer = async (value) => {
+      if (answered) return;
+      answered = true;
+      await closeDialog();
+      resolve(value);
+    };
+    openDialog(`<div class="ae-dialog-head"><h2>${esc(t("Save your changes?"))}</h2></div>
+      <div class="ae-dialog-body"><p>${esc(t("You have edits in the side panel that are not saved yet."))}</p></div>
+      <div class="ae-dialog-foot"><button class="ae-btn" data-act="close" data-focus>${esc(t("Continue editing"))}</button><button class="ae-btn" id="contact-discard">${esc(t("Discard changes"))}</button><button class="ae-btn ae-btn--primary" id="contact-save">${esc(t("Save"))}</button></div>`);
+    dialog().addEventListener("close", () => { if (!answered) { answered = true; resolve(false); } }, { once: true });
+    $("#contact-discard").onclick = () => answer(true);
+    $("#contact-save").onclick = async () => {
+      // Close the prompt first so validation errors stay in the editor.
+      answered = true;
+      await closeDialog();
+      resolve(await savePanel($('[data-act="panel-save"]', panel.el())));
+    };
+  });
 }
 /** Close the panel (after the caller has handled unsaved edits). */
 function closePanel() {
   const el = panel.el();
+  if (panel.saving) return Promise.resolve();
   if (!el || panel.closing) return panel.closing || Promise.resolve();
   const scrim = $("#scrim");
   const narrow = innerWidth <= 640;
@@ -2537,6 +3325,7 @@ function closePanel() {
     scrim?.remove();
     panel.closing = null;
     panel.section = null;
+    panel.session = null;
     panel.snapshot = "";
     if (invoker?.isConnected) invoker.focus({ preventScroll: true });
     else $("[data-heading]")?.focus({ preventScroll: true });
@@ -2544,6 +3333,7 @@ function closePanel() {
   return panel.closing;
 }
 async function requestClosePanel() {
+  if (panel.saving) return;
   if (panel.isDirty() && !(await confirmDiscard())) return;
   closePanel();
 }
@@ -2552,65 +3342,91 @@ function markInvalid(index) {
   rows.forEach((r, i) => r.classList.toggle("is-invalid", i === index));
   rows[index]?.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
 }
-const ERROR_ROW = /^(Name|Contact|Address|Date|Work|Account|Detail|Personal dates|Online accounts|Addresses|Names|Other details) (\d+):/;
+const ERROR_ROW = /^(Name|Contact|Address|Date|Work|Account|Detail|Education|Interest|Personal dates|Online accounts|Addresses|Names|Other details|Interests and preferences) (\d+):/;
 async function savePanel(button) {
   if (panel.section === "relationship") return saveRelation(button);
   if (panel.section === "membership") return saveMembership(button);
   if (panel.section === "event") return saveEvent(button);
-  if (!panel.isDirty()) return closePanel();
-  const section = panel.section;
-  const box = $("#form-error");
+  if (panel.section === "interaction") return saveInteraction(button);
+  if (panel.saving || !panel.isDirty()) return false;
+  const session = panel.session;
+  const box = $("#form-error", panel.el());
   box.hidden = true;
   markInvalid(-1);
-  button.classList.add("is-busy");
+  let section = panel.section;
+  const activeField = document.activeElement;
+  const focusIndex = $$("input, select, textarea", $("#panel-body")).indexOf(activeField);
+  const selection = activeField?.tagName === "TEXTAREA" || activeField?.type === "text"
+    ? [activeField.selectionStart, activeField.selectionEnd] : null;
+  let focusTarget = activeField;
+  panel.saving = true;
+  updateContactStatus();
+  // Freeze all editing until the response has established the new baseline.
+  panel.el().inert = true;
   try {
-    const doc = editable(state.person);
-    if (section === "notes") doc.notes = $("#notes").value;
-    else
-      doc[section] = $$("[data-row]", $("#editor-rows"))
+    const doc = editable(session.person);
+    for (const [key, pane] of session.panes) {
+      section = key;
+      if (formState(pane.node) === pane.snapshot) continue;
+      if (key === "notes") doc.notes = $("#notes", pane.node).value;
+      else doc[key] = $$("[data-row]", pane.node)
         .map((row, i) => [row, i])
         .filter(([row]) => !row.hasAttribute("data-starter") || rowState(row) !== row.dataset.starter)
-        .map(([row, i]) => readRow(row, EDITORS[section], i));
-    state.person = await api(entityApi(state.person), "PUT", doc);
-    button.classList.remove("is-busy");
-    button.classList.add("is-done");
-    button.innerHTML = `${icon("check")}<span>${esc(t("Saved"))}</span>`;
-    panel.snapshot = formState();
-    await new Promise((r) => setTimeout(r, reducedMotion() ? 0 : 380));
-    // Update the profile behind the panel first, so focus can return to the new Edit button.
-    refreshPerson();
-    panel.invoker = $(`.psection[data-section="${section}"] [data-act="edit"]`) || $('#person-page .profile-actions [data-act="edit"]');
-    await closePanel();
-    const target = $(`.psection[data-section="${section}"]`);
-    if (target) {
-      target.classList.remove("flash");
-      void target.offsetWidth;
-      target.classList.add("flash");
+        .map(([row, i]) => ({ ...doc[key].find((record) => record.id === row.dataset.id), ...readRow(row, EDITORS[key], i) }));
     }
-    toast(t("{section} saved", { section: panelTitle(section) }), "good");
-    refreshCounts();
+    doc.expected_revision = session.person.edit_revision;
+    const saved = await api(entityApi(session.person), "PUT", doc);
+    state.person = saved;
+    const current = panel.section;
+    const scroll = $("#panel-body").scrollTop;
+    const expanded = $$("details", $("#panel-body")).map((details) => details.open);
+    session.person = structuredClone(saved);
+    session.panes.clear(); // Rebuild from returned IDs and normalized values; retries cannot duplicate rows.
+    showContactTab(current);
+    $$("details", $("#panel-body")).forEach((details, i) => { details.open = expanded[i] ?? details.open; });
+    $("#panel-body").scrollTop = scroll;
+    refreshPerson();
+    panel.invoker = $(`.psection[data-section="${current}"] [data-act="edit"]`) || $("[data-heading]");
+    panel.el().inert = false;
+    focusTarget = $$("input, select, textarea", $("#panel-body"))[focusIndex] || button;
+    $("#panel-dirty").textContent = t("Saved");
+    refreshCounts().catch(() => {});
+    return true;
   } catch (error) {
-    button.classList.remove("is-busy");
+    const serverSection = { Name: "names", Contact: "contacts", Address: "addresses", Date: "dates", Work: "employments", Account: "accounts", Detail: "facts", Education: "education", Interest: "interests" };
+    const match = error.message.match(ERROR_ROW);
+    if (error instanceof RowError) showContactTab(section);
+    else if (match && serverSection[match[1]]) showContactTab(serverSection[match[1]]);
     box.textContent = error.message;
     box.hidden = false;
-    animate(box, [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], MOTION.fast);
-    const index = error instanceof RowError ? error.row : (() => {
-      const m = error.message.match(ERROR_ROW);
-      return m ? +m[2] - 1 : -1;
-    })();
+    const index = error instanceof RowError ? error.row : match ? +match[2] - 1 : -1;
     if (index >= 0) markInvalid(index);
+    return false;
+  } finally {
+    panel.saving = false;
+    panel.el().inert = false;
+    const saved = !panel.isDirty();
+    updateContactStatus();
+    if (saved) $("#panel-dirty").textContent = t("Saved");
+    if (focusTarget?.isConnected && !focusTarget.disabled) {
+      focusTarget.focus({ preventScroll: true });
+      if (selection) focusTarget.setSelectionRange?.(...selection);
+    }
   }
 }
+
 document.addEventListener("change", (event) => {
   // A suggested label that does not fit the new channel follows it ("mobile" is not an email label).
   const select = event.target.closest('#panel [data-k="channel"]');
   const label = select && $('[data-k="label"]', select.closest("[data-row]"));
-  if (!label) return;
+  if (!label) { updateContactStatus(); return; }
   const known = Object.values(LABELS).flat();
   if (known.includes(label.value) && !LABELS[select.value]?.includes(label.value)) label.value = LABELS[select.value][0];
+  updateContactStatus();
 });
 document.addEventListener("input", (event) => {
   if (!event.target.closest("#panel")) return;
+  if (panel.session) return updateContactStatus();
   const dirty = $("#panel-dirty");
   if (dirty) dirty.textContent = panel.isDirty() ? t("Unsaved changes") : "";
 });
@@ -3226,6 +4042,7 @@ async function viewSettings(sheet, token) {
   if (stale(token)) return;
   state.self = stateData.self;
   state.version = stateData.version;
+  if (stateData.settings) state.prefs = stateData.settings;
   const me = state.self;
   const you = me
     ? `<div class="list"><div class="set-row">${avatar(me.display_name, me.id, "md self")}<span class="who"><span class="primary">${esc(me.display_name)} <span class="self-badge">@me</span></span><span class="secondary">${esc(me.work || me.email || me.phone || "")}</span></span>
@@ -3247,11 +4064,35 @@ async function viewSettings(sheet, token) {
   sheet.innerHTML = `<div class="page banded settings">
     ${screenBand({ title: t("Settings"), meta: [`<span>${esc(t("Meridian {version}", { version: state.version }))}</span>`] })}
     <div class="wrap body"><div class="measure">
-      ${setSection("me", t("You (@me)"), t("An ordinary person marked as you. Other Aureate Empyrean applications refer to you through it."), you)}
+      ${setSection("me", t("You (@me)"), t("An ordinary person marked as you. Other Aureate Empyrean applications refer to you through it. Type @me in any person search to find it."), you)}
+      ${setSection("people", t("People"), t("How names are ordered and written in the People list, searches and pickers. Stored names are never changed."), peopleSettings())}
       ${setSection("imports", t("Import history"), t("Every import, with what it added. Open one to see each contact's outcome."), history)}
       ${setSection("data", t("Your data"), "", `<div class="list vrows">${facts.map(([k, v]) => vrow(k, esc(v))).join("")}</div>`)}
-      ${setSection("about", t("About"), "", `<div class="list vrows">${vrow(t("Version"), esc(state.version))}${vrow(t("Planned"), esc(t("Organizations and Groups as full pages, relationships, a relationship graph and a timeline.")))}</div>`)}
+      ${setSection("about", t("About"), "", `<div class="list vrows">${vrow(t("Version"), esc(state.version))}</div>`)}
     </div></div></div>`;
+}
+/** Settings → People: sorting and display order, chosen independently. */
+function peopleSettings() {
+  const p = state.prefs;
+  return `<div class="list vrows set-prefs">
+    <div class="vrow set-pref"><span class="label" id="pref-sort-label">${esc(t("Sort by"))}</span><span class="value">${segmented("pref-sort", t("Sort people by"), [["given", t("First name → Last name")], ["family", t("Last name → First name")]], p.people_sort)}</span></div>
+    <div class="vrow set-pref"><span class="label" id="pref-display-label">${esc(t("Show names as"))}</span><span class="value">${segmented("pref-display", t("Show names as"), [["given", t("First name Last name")], ["family", t("Last name, First name")]], p.people_display)}</span></div>
+    <p class="ae-hint set-pref-hint">${esc(t("Alphabetical order follows Slovak rules (č after c, ch after h). People recorded with their name as one piece of text, without first and last name parts, are sorted and shown as written."))}</p></div>`;
+}
+async function savePreference(el, key) {
+  const value = el.dataset.value;
+  if (state.prefs[key] === value) return;
+  const before = state.prefs[key];
+  pressOnly(el.parentElement, el);
+  try {
+    state.prefs = await api("/settings", "PUT", { [key]: value });
+    state.people.items = [];
+    toast(t("Saved"), "good");
+  } catch (error) {
+    state.prefs[key] = before;
+    pressOnly(el.parentElement, $(`[data-value="${before}"]`, el.parentElement));
+    toast(error.message, "danger");
+  }
 }
 async function importDetail(id) {
   const d = await api(`/imports/${id}`);
@@ -3459,6 +4300,7 @@ document.addEventListener("click", async (event) => {
       return openPerson(id, el, el.dataset.kind || "person");
     }
     if (act === "new-entity") return newEntity(el.dataset.kind);
+    if (act === "pick-image") return state.person && openPicture(state.person);
     if (act === "create-entity") return createEntity(el);
     if (act === "trash-entity") {
       closeMenu();
@@ -3491,6 +4333,11 @@ document.addEventListener("click", async (event) => {
       return record && openMembership(record, el);
     }
     if (act === "rel-save-anyway") return saveRelation($('#panel [data-act="panel-save"]'), true);
+    if (act === "tr-cancel") return finishTransition("cancel");
+    if (act === "tr-keep") return finishTransition("keep");
+    if (act === "tr-end") return finishTransition("end");
+    if (act === "sib-cancel") return closeDialog();
+    if (act === "sib-save") return saveSiblings(el);
     if (act === "rel-end") {
       $("#rel-state").value = "former";
       const until = $('[data-date="rel-until"]');
@@ -3501,6 +4348,8 @@ document.addEventListener("click", async (event) => {
       }
       $("[data-part=y]", until).focus();
       $("#panel-dirty").textContent = panel.isDirty() ? t("Unsaved changes") : "";
+      // Family records: ending closes this record's period; it never says the kinship stopped.
+      if (relEditor.record?.permanent) return toast(t("This record is set to ended with this month. A family tie does not end through distance or conflict; if the record is wrong, correct it or remove it instead."));
       return toast(t("Set to ended with this month; adjust the date if you know it, then save."));
     }
     if (act === "rel-remove" || act === "mem-remove") {
@@ -3508,7 +4357,7 @@ document.addEventListener("click", async (event) => {
       const record = relation ? relEditor.record : memEditor.record;
       return confirmAction(
         relation ? t("Remove this relationship?") : t("Remove this membership?"),
-        relation ? t("Use this when it was recorded by mistake. If it was real but is over, choose “End it” instead, so its history stays.") : t("Use this when it was recorded by mistake. If it was real but is over, set an end date instead, so its history stays."),
+        relation && record.permanent ? t("Use this when it was recorded by mistake, for example the wrong person. Removing it does not record that contact stopped, and family ties are not ended by distance or conflict.") : relation ? t("Use this when it was recorded by mistake. If it was real but is over, choose “End it” instead, so its history stays.") : t("Use this when it was recorded by mistake. If it was real but is over, set an end date instead, so its history stays."),
         t("Remove"),
         async () => {
           await api(relation ? `/relationships/${record.id}` : `/memberships/${record.id}`, "DELETE");
@@ -3542,6 +4391,10 @@ document.addEventListener("click", async (event) => {
       return openPanel(el.dataset.section, el.closest(".ae-menu") ? $('[data-act="person-menu"]') : el);
     }
     if (act === "panel-section") return openPanel(el.dataset.section);
+    if (act === "panel-cancel") {
+      if (!panel.saving) return closePanel();
+      return;
+    }
     if (act === "panel-close") return requestClosePanel();
     if (act === "panel-save") return savePanel(el);
     if (act === "add-row") {
@@ -3552,6 +4405,7 @@ document.addEventListener("click", async (event) => {
       $("input:not([type=checkbox]), select", row)?.focus();
       const dirty = $("#panel-dirty");
       if (dirty) dirty.textContent = t("Unsaved changes");
+      updateContactStatus();
       return;
     }
     if (act === "remove-row") {
@@ -3560,6 +4414,7 @@ document.addEventListener("click", async (event) => {
       row.remove();
       const dirty = $("#panel-dirty");
       if (dirty) dirty.textContent = panel.isDirty() ? t("Unsaved changes") : "";
+      updateContactStatus();
       return $('[data-act="add-row"]')?.focus();
     }
     if (act === "person-menu") return el.getAttribute("aria-expanded") === "true" ? closeMenu() : personMenu(el);
@@ -3630,6 +4485,8 @@ document.addEventListener("click", async (event) => {
       el.setAttribute("aria-pressed", String(state.people.has.has(f)));
       return refreshPeople();
     }
+    if (act === "pref-sort") return savePreference(el, "people_sort");
+    if (act === "pref-display") return savePreference(el, "people_display");
     if (act === "sort") {
       if (state.people.sort === el.dataset.value) return;
       state.people.sort = el.dataset.value;
@@ -3667,6 +4524,7 @@ document.addEventListener("click", async (event) => {
     }
     if (act === "copy") return copyText(el.dataset.value);
     if (act === "external") return bridge("external", { url: el.dataset.url }).catch((e) => toast(e.message, "danger"));
+    if (act === "open-module") return bridge("navigate", { module: el.dataset.module, ...(el.dataset.path ? { path: el.dataset.path } : {}) }).catch((e) => toast(e.message, "danger"));
     if (act === "import-commit") return commitImport(el);
     if (act === "import-continue") return showImportStep("confirm");
     if (act === "import-back") return showImportStep("review");
@@ -3715,13 +4573,25 @@ async function start() {
   document.documentElement.lang = activeLocale;
   try {
     const data = await api("/state");
-    Object.assign(state, { counts: data.counts, self: data.self, version: data.version });
+    Object.assign(state, { counts: data.counts, self: data.self, version: data.version, prefs: data.settings || state.prefs });
   } catch (error) {
     $("#app").innerHTML = `<div class="ae-empty">${icon("alert")}<h3>${esc(t("Meridian could not start"))}</h3><p>${esc(error.message)}</p></div>`;
     return;
   }
   state.route = routeFromLocation();
   renderShell();
+  // Inside a Nexus that supports it, the browser URL and Back/Forward follow Meridian's screens.
+  if (state.context.navigation?.versions?.includes(1)) {
+    try {
+      if (await meridianNavigation.start(state.context)) {
+        // Show the canonical address for the first screen without adding a history entry.
+        if (shownRoute) await queueNavigation(shownRoute, "replace").catch(() => {});
+        return;
+      }
+    } catch {
+      /* the host did not answer the handshake: keep the in-memory navigation below */
+    }
+  }
   render({ focus: false });
 }
 start();

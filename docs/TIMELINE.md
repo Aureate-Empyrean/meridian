@@ -123,7 +123,8 @@ Deleting an event removes its participants and provenance (a trigger) and nothin
   stacks its date above its words. Visual rules: DESIGN.md § 23.
 - **Order:** oldest first, by year. "During 1990" (year-only entries) comes before the months,
   and months before their days. Quiet stretches are shown ("12 quiet years"), not collapsed
-  away. "Date unknown" comes last.
+  away. "Date unknown" comes last. Entries on the same exact date share one date label
+  (0.5.0, § 10a).
 - **Grouping for dense periods:**
   - **Overview** (the default above 160 entries) shows each year's summary by kind and its
     three most telling entries (events, then life dates, then connections), with "Show all N
@@ -220,6 +221,11 @@ timelines are seeded in isolated QA instances.
   - Graph ↔ Timeline.
 
   A read-only pass ran on the real aetest data.
+- **0.5.0 same-date grouping:** `tests/ux.test.cjs` (matching rules: precision, approximate,
+  other years, year-only and undated entries, runs), `tests/test_ux.py`
+  (`test_timeline_keeps_same_day_entries_distinct_and_adjacent`), and the browser journey
+  `tests/e2e/ux_e2e.cjs` (Timeline view and profile tab, 1440 and 390 px: one "Aug 23" label,
+  two distinct entries, each still announcing its full date).
 
 ## 10. Known limits
 
@@ -235,6 +241,29 @@ timelines are seeded in isolated QA instances.
   builder per source) is where they would join.
 - **Large timelines:** above 8,000 entries the whole-Meridian timeline is truncated (flagged).
   Narrowing by entity or years returns the rest.
+
+## 10a. Same-date grouping (0.5.0)
+
+Implemented in 0.5.0 from the owner-approved requirement
+([`architecture/modules/meridian.md`](../../architecture/modules/meridian.md#7-timeline--group-events-by-exact-date)).
+Presentation only: the projection, its order, ids and counts are unchanged, and nothing is stored.
+
+- Consecutive entries with the **same date string and the same `approximate` flag**, at month or
+  day precision, share one date label (`MeridianUX.sameDay` / `dayRuns` in `frontend/ux.js`).
+  For example, under *1987*: **Aug 23** · *Born — Vzorko Kvázimenný*, then *Began — Vzorko
+  Kvázimenný child of Ukážka Kvázimenná* without a second "Aug 23".
+- Never grouped: `1987-08` with `1987-08-23`; an approximate date with an exact one; the same
+  month and day in another year; year-only entries (they have no day label; they sit under
+  "During <year>" as before); `--MM-DD` and undated entries ("Date unknown" is unchanged).
+- Each entry stays its own row and button with its icon, tag, sentence, details, selection and
+  keyboard focus; its accessible name still states its full date. A following same-day row
+  (`.is-day-cont`) sits closer to the first and a hairline in the date column ties them; on
+  phones the repeated date line is simply omitted.
+- Applies wherever entries are listed: Detail month groups, Overview's highlighted entries, the
+  "Show N more" expansion (grouping is computed on the rows actually shown), lazily built
+  years, filtered views, and the Timeline tab on profiles.
+- Relationship entries now also carry `kinship` (0.5.0): the second line names half-siblings,
+  siblings through adoption, adoptive or step parenthood.
 
 ## 11. Schema and migration
 

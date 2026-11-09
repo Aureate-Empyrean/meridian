@@ -165,7 +165,81 @@ class FactIn(Record):
     value: str = Field(min_length=1, max_length=4000)
 
 
+# Open vocabularies (owner decision D7: dedicated records). The interface offers these; any
+# other lower-case word is accepted and kept, so the lists grow without migrations.
+EDUCATION_KINDS = ("primary_school", "secondary_school", "university", "course",
+                   "certification", "training", "other")  # fmt: skip
+EDUCATION_STATUS = ("studying", "graduated", "dropped_out", "interrupted", "unknown")
+INTEREST_CATEGORIES = ("hobbies", "sports", "music", "films_tv", "books", "games", "art",
+                       "technology", "science", "history", "travel", "fashion", "food",
+                       "vehicles", "collecting", "communities", "topics", "other")  # fmt: skip
+SENTIMENTS = ("loves", "likes", "neutral", "dislikes", "hates", "favorite", "preferred", "avoids")
+INTERACTION_TYPES = ("meeting", "call", "conversation", "messages", "activity", "visit",
+                     "introduction", "gift", "conflict", "help", "other")  # fmt: skip
+TOKEN = r"^[\w][\w -]*$"
+REFERENCE = re.compile(
+    r"^nexus:v1:[a-z][a-z0-9-]{0,47}:[a-z][a-z0-9-]{0,47}:"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def token(value: str) -> str:
+    """'Dropped out' -> 'dropped_out': vocabulary values are stored as lower-case keys."""
+    return "_".join(value.lower().replace("-", " ").split())
+
+
+class EducationIn(Record):
+    """Education at a school, university, course or training. valid_from/valid_until are the
+    period; the institution is an Organization (found by name or chosen, never duplicated)."""
+
+    organization: str = Field(default="", max_length=200)
+    organization_id: str | None = Field(default=None, pattern=UUID_PATTERN)
+    kind: str = Field(default="", max_length=40)
+    department: str = Field(default="", max_length=200)
+    program: str = Field(default="", max_length=200)
+    field: str = Field(default="", max_length=200)
+    degree: str = Field(default="", max_length=200)
+    status: str = Field(default="", max_length=40)
+    achievements: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def check(self):
+        for name in ("kind", "status"):
+            value = getattr(self, name)
+            if value and not re.fullmatch(TOKEN, value):
+                raise ValueError("Use letters, digits and spaces for the kind and status")
+            setattr(self, name, token(value))
+        if not (self.organization or self.program or self.field or self.degree):
+            raise ValueError("Education needs a school or a program, field or qualification")
+        return self
+
+
+class InterestIn(Record):
+    """An interest or preference: a subject in a category, with a sentiment ("favorite" is a
+    sentiment, never a column) and optional context ("with dinner")."""
+
+    category: str = Field(default="", max_length=40)
+    subject: str = Field(min_length=1, max_length=300)
+    sentiment: str = Field(default="", max_length=40)
+    context: str = Field(default="", max_length=300)
+    # Reserved for a cross-module target (a Lyra title later); the subject text always stays.
+    target_kind: str = Field(default="", max_length=40)
+    target_ref: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def check(self):
+        for name in ("category", "sentiment", "target_kind"):
+            value = getattr(self, name)
+            if value and not re.fullmatch(TOKEN, value):
+                raise ValueError("Use letters, digits and spaces for the category and feeling")
+            setattr(self, name, token(value))
+        if self.target_ref and not REFERENCE.fullmatch(self.target_ref):
+            raise ValueError("Unknown reference")
+        return self
+
+
 class PersonDoc(Strict):
+    expected_revision: str | None = Field(default=None, max_length=64, exclude=True)
     names: list[NameIn] = Field(default_factory=list, max_length=30)
     contacts: list[ContactIn] = Field(default_factory=list, max_length=100)
     addresses: list[AddressIn] = Field(default_factory=list, max_length=30)
@@ -173,6 +247,8 @@ class PersonDoc(Strict):
     employments: list[EmploymentIn] = Field(default_factory=list, max_length=50)
     accounts: list[AccountIn] = Field(default_factory=list, max_length=50)
     facts: list[FactIn] = Field(default_factory=list, max_length=100)
+    education: list[EducationIn] = Field(default_factory=list, max_length=50)
+    interests: list[InterestIn] = Field(default_factory=list, max_length=200)
     notes: str = Field(default="", max_length=20000)
 
     @model_validator(mode="after")
@@ -193,6 +269,8 @@ class EntityDoc(PersonDoc):
     def no_work(self):
         if self.employments:
             raise ValueError("Work records belong to people")
+        if self.education or self.interests:
+            raise ValueError("Education and interests belong to people")
         return self
 
 
@@ -229,13 +307,54 @@ class Connection(Strict):
         return partial(value)
 
 
+Kinship = Literal["biological", "biological_full", "biological_half", "adoptive", "step"]
+
+
+class EndIn(Strict):
+    """An ongoing relationship the user chose to end because the new one begins."""
+
+    id: str = Field(pattern=UUID_PATTERN)
+    valid_until: str | None = Field(default=None, max_length=10)
+
+    @field_validator("valid_until")
+    @classmethod
+    def _until(cls, value):
+        return dated(value)
+
+
 class RelationshipIn(Connection):
     subject_id: str = Field(pattern=UUID_PATTERN)
     object_id: str = Field(pattern=UUID_PATTERN)
     type: str = Field(min_length=1, max_length=80)
     context: str = Field(default="", max_length=80)
+    # How a parent or sibling relationship came about; None = not recorded.
+    kinship: Kinship | None = None
     # Set after the user has seen a similar existing relationship and still wants this one.
     allow_similar: bool = False
+    # Ongoing relationships to end in the same transaction (creation only).
+    end_relationships: list[EndIn] = Field(default_factory=list, max_length=20)
+
+
+class SiblingIn(Strict):
+    a: str = Field(pattern=UUID_PATTERN)
+    b: str = Field(pattern=UUID_PATTERN)
+    kinship: Kinship | None = None
+    record_id: str | None = Field(default=None, pattern=UUID_PATTERN)
+
+    @model_validator(mode="after")
+    def _pair(self):
+        if self.a == self.b:
+            raise ValueError("A sibling relationship needs two different people")
+        return self
+
+
+class SiblingsIn(Strict):
+    items: list[SiblingIn] = Field(min_length=1, max_length=100)
+
+
+class SettingsIn(Strict):
+    people_sort: Literal["given", "family"] | None = None
+    people_display: Literal["given", "family"] | None = None
 
 
 class MembershipIn(Connection):
@@ -296,6 +415,64 @@ class EventIn(Strict):
         ids = [p.entity_id for p in self.participants]
         if len(set(ids)) != len(ids):
             raise ValueError("Each participant can be added once")
+        return self
+
+
+class LinkIn(Strict):
+    """A resource another module owns that an Interaction is about (D8: Chronos events and
+    Mnemosyne notes, tasks, projects and collections)."""
+
+    resource: str = Field(max_length=200)
+    label: str = Field(default="", max_length=200)
+
+    @field_validator("resource")
+    @classmethod
+    def _resource(cls, value):
+        if not REFERENCE.fullmatch(value):
+            raise ValueError("Unknown linked item")
+        module, kind = value.split(":")[2:4]
+        if (module, kind) not in LINKABLE:
+            raise ValueError("Only Chronos events, Mnemosyne items and Atlas places can be linked")
+        return value
+
+
+LINKABLE = {("chronos", "event"), ("mnemosyne", "note"), ("mnemosyne", "task"),
+            ("mnemosyne", "project"), ("mnemosyne", "collection"), ("atlas", "place")}  # fmt: skip
+
+
+class InteractionIn(Strict):
+    """A manually recorded Interaction (D8): contact or activity between participants, with an
+    optional Group as context and optional links to Chronos/Mnemosyne items."""
+
+    type: str = Field(default="meeting", min_length=1, max_length=40)
+    summary: str = Field(min_length=1, max_length=300)
+    notes: str = Field(default="", max_length=8000)
+    occurred: str | None = Field(default=None, max_length=10)
+    approximate: bool = False
+    group_id: str | None = Field(default=None, pattern=UUID_PATTERN)
+    confidence: Confidence | None = None
+    participants: list[ParticipantIn] = Field(min_length=1, max_length=50)
+    links: list[LinkIn] = Field(default_factory=list, max_length=20)
+    sources: list[SourceIn] = Field(default_factory=list, max_length=20)
+    expected_revision: str | None = Field(default=None, max_length=64)
+
+    @field_validator("occurred")
+    @classmethod
+    def _occurred(cls, value):
+        return dated(value)
+
+    @model_validator(mode="after")
+    def check(self):
+        if not re.fullmatch(TOKEN, self.type):
+            raise ValueError("Use letters, digits and spaces for the type")
+        self.type = token(self.type)
+        self.summary = " ".join(self.summary.split())
+        ids = [p.entity_id for p in self.participants]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Each participant can be added once")
+        resources = [link.resource for link in self.links]
+        if len(set(resources)) != len(resources):
+            raise ValueError("Each item can be linked once")
         return self
 
 

@@ -5229,3 +5229,489 @@ mark {
     scroll-margin-top: 128px;
   }
 }
+
+/* ── 0.4.0: pictures from Argus ─────────────────────────────────
+   A picture fills the avatar's own shape (Person rounded square, Organization small
+   corners, Group circle); the initials underneath stay as the fallback. */
+.avatar.has-photo {
+  background-color: var(--m-raised);
+  background-position: center;
+  background-size: cover;
+  color: transparent;
+  text-shadow: none;
+}
+.avatar-edit {
+  position: relative;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 26px;
+  background: none;
+  cursor: pointer;
+}
+.avatar-edit:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 3px;
+}
+.avatar-edit-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--m-raised);
+  box-shadow: inset 0 0 0 1px var(--m-line-strong), 0 2px 8px rgba(0, 0, 0, 0.35);
+  color: var(--m-text-2);
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.avatar-edit:hover .avatar-edit-badge,
+.avatar-edit:focus-visible .avatar-edit-badge {
+  opacity: 1;
+}
+@media (hover: none) {
+  .avatar-edit-badge {
+    opacity: 1;
+  }
+}
+.ae-dialog-foot .spacer {
+  flex: 1;
+}
+.pic-body {
+  min-height: 300px;
+}
+.pic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px;
+}
+.pic-tile {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--m-raised);
+  box-shadow: inset 0 0 0 1px var(--m-line);
+  cursor: pointer;
+}
+.pic-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.pic-tile:hover,
+.pic-tile:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent-line);
+}
+.pic-tile.is-current {
+  box-shadow: inset 0 0 0 2px var(--accent-line), 0 0 0 2px var(--accent-line);
+}
+.pic-more {
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+.pic-empty {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 18px;
+  border-radius: 12px;
+  background: var(--m-raised);
+  color: var(--m-text-2);
+}
+.pic-empty p {
+  margin: 0;
+}
+.pic-crop {
+  display: grid;
+  grid-template-columns: minmax(0, 360px) minmax(180px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.pic-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #0d0b0a;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.pic-stage:active {
+  cursor: grabbing;
+}
+.pic-stage:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 3px;
+}
+.pic-stage img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+/* The final shape, cut out of a soft veil over the rest of the square. */
+.pic-mask {
+  position: absolute;
+  inset: 0;
+  border-radius: 27%;
+  box-shadow: 0 0 0 999px rgba(10, 8, 7, 0.55), inset 0 0 0 1.5px rgba(255, 255, 255, 0.65);
+  pointer-events: none;
+}
+.pic-stage.is-organization .pic-mask {
+  border-radius: 16%;
+}
+.pic-stage.is-group .pic-mask {
+  border-radius: 50%;
+}
+.pic-zoom {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0 18px;
+}
+.pic-zoom input {
+  flex: 1;
+  accent-color: var(--accent, #c48663);
+}
+.pic-previews {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  margin: 8px 0 14px;
+}
+.pic-prev {
+  background: var(--m-raised);
+  border-radius: 27%;
+}
+.pic-prev.xl {
+  width: 88px;
+  height: 88px;
+}
+.pic-prev.md {
+  width: 44px;
+  height: 44px;
+}
+.pic-prev.sm {
+  width: 34px;
+  height: 34px;
+}
+.pic-prev.is-organization {
+  border-radius: 16%;
+}
+.pic-prev.is-group {
+  border-radius: 50%;
+}
+@media (max-width: 640px) {
+  .pic-crop {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pic-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* ── 0.5.0: approved UX improvements ─────────────────────────────
+
+   Native select lists (relationship type, kinship, dates...). The shared foundation colours
+   <option> but not <optgroup>, so Chromium on Windows drew the group headings (Family,
+   Partners, Friends and social) in the light text colour on the list's default white, while
+   the options were dark. Every part of the list now takes Meridian's overlay surface; the
+   native control keeps its keyboard behaviour, type-ahead and screen-reader semantics. */
+.ae-select {
+  color-scheme: dark;
+}
+.ae-select optgroup {
+  background-color: var(--m-overlay);
+  color: var(--m-text-2);
+  font-style: normal;
+  font-weight: var(--weight-semibold);
+}
+.ae-select option {
+  background-color: var(--m-overlay);
+  color: var(--m-text);
+  font-weight: 400;
+}
+.ae-select option:checked {
+  background-color: var(--m-raised-hover);
+  color: var(--m-text);
+}
+.ae-select option:disabled {
+  color: var(--m-text-3);
+}
+@media (forced-colors: active) {
+  .ae-select optgroup,
+  .ae-select option {
+    background-color: Canvas;
+    color: CanvasText;
+  }
+}
+
+/* Timeline: entries on the same exact date share one date label. Each stays its own row; the
+   following rows sit closer and a hairline in the date column ties them to the label. */
+.tl-entry.is-day-open > .tl-item {
+  padding-bottom: 3px;
+}
+.tl-entry.is-day-cont > .tl-item {
+  padding-top: 3px;
+}
+.tl-entry.is-day-cont:not(.is-day-close) > .tl-item {
+  padding-bottom: 3px;
+}
+.tl-entry.is-day-open > .tl-item > .tl-when,
+.tl-entry.is-day-cont > .tl-item > .tl-when {
+  position: relative;
+  align-self: stretch;
+}
+.tl-entry.is-day-open > .tl-item > .tl-when::after,
+.tl-entry.is-day-cont > .tl-item > .tl-when::after {
+  content: "";
+  position: absolute;
+  right: 1px;
+  width: 1px;
+  background: var(--m-line-strong);
+}
+.tl-entry.is-day-open > .tl-item > .tl-when::after {
+  top: 22px;
+  bottom: -3px;
+}
+.tl-entry.is-day-cont > .tl-item > .tl-when::after {
+  top: -3px;
+  bottom: -3px;
+}
+.tl-entry.is-day-close > .tl-item > .tl-when::after {
+  bottom: 50%;
+}
+@media (max-width: 640px) {
+  .tl-entry.is-day-cont > .tl-item > .tl-when {
+    display: none;
+  }
+  .tl-entry.is-day-open > .tl-item > .tl-when::after,
+  .tl-entry.is-day-cont > .tl-item > .tl-when::after {
+    display: none;
+  }
+}
+#ptl-body .tl-entry.is-day-cont > .tl-item > .tl-when::after,
+#ptl-body .tl-entry.is-day-open > .tl-item > .tl-when::after {
+  right: 1px;
+}
+
+/* Relationship form: kinship and the suggested start date. */
+.rel-kinship .ae-hint:empty,
+.rel-suggest:empty {
+  display: none;
+}
+.rel-suggest {
+  margin: -4px 0 0;
+  color: var(--m-accent-text);
+}
+
+/* "Still going on?" (ongoing relationships) and "Possible siblings" dialogs. */
+.tr-list {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 14px;
+  padding: 0;
+  border: 0;
+}
+.tr-list legend {
+  margin-bottom: 6px;
+}
+.tr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--m-line);
+  border-radius: var(--m-r-group);
+  background: var(--m-raised);
+  cursor: pointer;
+}
+.tr-row:hover {
+  background: var(--m-raised-hover);
+}
+.tr-row .ae-check {
+  margin-top: 2px;
+}
+.tr-row .grow,
+.sib-who .nm {
+  min-width: 0;
+}
+.tr-row .grow {
+  display: grid;
+  gap: 2px;
+}
+.tr-row .primary {
+  color: var(--m-text);
+  font-size: var(--m-fs-body);
+  overflow-wrap: anywhere;
+}
+.tr-row .secondary {
+  color: var(--m-text-3);
+  font-size: var(--m-fs-small);
+}
+.tr-foot,
+.ae-dialog-foot {
+  flex-wrap: wrap;
+}
+.sib-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sib-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--m-line);
+  border-radius: var(--m-r-group);
+  background: var(--m-raised);
+}
+.sib-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--m-text);
+  font-weight: var(--weight-medium);
+}
+.sib-and {
+  color: var(--m-text-3);
+}
+.sib-why {
+  margin: 0;
+  color: var(--m-text-2);
+  font-size: var(--m-fs-meta);
+  line-height: 1.45;
+}
+.sib-row .ae-field {
+  margin: 0;
+}
+
+/* Settings → People. */
+.set-pref {
+  grid-template-columns: 132px minmax(0, 1fr);
+}
+.set-pref .value {
+  white-space: normal;
+}
+.set-pref .seg {
+  flex-wrap: wrap;
+}
+.set-pref-hint {
+  margin: 0;
+  padding: 10px 18px 14px;
+}
+@media (max-width: 640px) {
+  .set-pref {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .set-pref .seg {
+    display: flex;
+    width: 100%;
+  }
+  .set-pref .seg-btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* Linked from other modules (0.6.0). */
+.linked-row .label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.linked-row .label svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--m-text-3);
+}
+.linked-row .value .sub {
+  display: block;
+  color: var(--m-text-3);
+  font-size: var(--m-fs-small);
+}
+.linked-hint {
+  margin: 8px 2px 0;
+}
+
+/* Interactions (0.7.0): linked items and the list of items to link. */
+.ix-more {
+  margin-top: 8px;
+}
+.ix-links,
+.ix-choices {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.ix-link,
+.ix-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.ix-choice {
+  cursor: pointer;
+}
+.ix-choice:hover {
+  background: var(--accent-hover, rgba(255, 255, 255, 0.05));
+}
+.ix-choice:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
+.ix-link .grow,
+.ix-choice .grow {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.ix-link .primary,
+.ix-choice .primary {
+  overflow-wrap: anywhere;
+}
+.ix-link .secondary,
+.ix-choice .secondary {
+  font-size: 12px;
+  opacity: 0.72;
+}
+.ix-link.is-gone .primary {
+  opacity: 0.65;
+  text-decoration: line-through;
+}
+#ix-candidates,
+#ix-place-results,
+.ix-place-q {
+  margin-top: 8px;
+}

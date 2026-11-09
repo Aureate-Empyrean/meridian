@@ -2,6 +2,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import collation
+
 # Model (architecture/modules/meridian.md):
 # - entities: the common core of Person, Organization and Group (first-class, stable UUIDv7
 #   identities, the future graph's nodes). Kind-specific knowledge lives in record tables.
@@ -170,7 +172,133 @@ CREATE TRIGGER events_drop_provenance AFTER DELETE ON events BEGIN
 CREATE INDEX relationships_from ON relationships(valid_from);
 CREATE INDEX memberships_from ON memberships(valid_from);
 """,
+    # 0.4.0: a representative image per entity. Argus owns the photo; Meridian keeps only the
+    # photo's ID and the owner's square crop (0-1 of the picture as viewed). Purging the
+    # entity removes it. `nexus_*` track the Nexus reference shared with Argus; the reference
+    # IDs of edges to remove later wait in `reference_cleanup`.
+    """
+CREATE TABLE representative_images(entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+ photo_id TEXT NOT NULL,
+ crop_x REAL NOT NULL CHECK(crop_x >= 0 AND crop_x < 1), crop_y REAL NOT NULL CHECK(crop_y >= 0 AND crop_y < 1),
+ crop_w REAL NOT NULL CHECK(crop_w > 0 AND crop_w <= 1), crop_h REAL NOT NULL CHECK(crop_h > 0 AND crop_h <= 1),
+ updated_at TEXT NOT NULL,
+ nexus_reference_id TEXT, nexus_state TEXT NOT NULL DEFAULT 'pending' CHECK(nexus_state IN ('pending','registered')));
+CREATE INDEX representative_images_photo ON representative_images(photo_id);
+CREATE TABLE reference_cleanup(reference_id TEXT PRIMARY KEY, queued_at TEXT NOT NULL);
+""",
+    # 0.5.0: kinship origin, name-order columns and People preferences (schema 6).
+    lambda db: schema_6(db),
+    # 0.7.0 (schema 7, roadmap Phase 3, owner decisions D7/D8): Education and Interests as
+    # dedicated records, Interactions as manual records stored once. All additive.
+    f"""
+-- Education: a temporal domain record (like work). The school is an Organization entity;
+-- kind and status are open vocabularies offered by the interface. valid_from/valid_until are
+-- the period; a record with valid_until is former, kept as history.
+CREATE TABLE educations(id TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ organization_id TEXT REFERENCES entities(id) ON DELETE SET NULL, kind TEXT NOT NULL DEFAULT '',
+ department TEXT NOT NULL DEFAULT '', program TEXT NOT NULL DEFAULT '', field TEXT NOT NULL DEFAULT '',
+ degree TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', achievements TEXT NOT NULL DEFAULT '',
+ {RECORD});
+CREATE INDEX educations_person ON educations(person_id);
+CREATE INDEX educations_organization ON educations(organization_id);
+-- Interests and preferences: extensible records, never favorite_* columns. "favorite" is a
+-- sentiment, so several favorites are possible; history is kept through valid_until.
+-- target_ref is reserved for a cross-module reference (a Lyra title later); the subject text
+-- always stays, so a preference never depends on another module.
+CREATE TABLE interests(id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ category TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, sentiment TEXT NOT NULL DEFAULT '',
+ context TEXT NOT NULL DEFAULT '', target_kind TEXT NOT NULL DEFAULT '', target_ref TEXT, {RECORD});
+CREATE INDEX interests_entity ON interests(entity_id);
+-- Interactions: contact or activity between participants, stored once and shown for each of
+-- them. Manually entered (D8); Hermes communications are never copied here. group_id is
+-- optional context and never stands in for known participants.
+CREATE TABLE interactions(id TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT 'meeting',
+ summary TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', occurred TEXT,
+ approximate INTEGER NOT NULL DEFAULT 0 CHECK(approximate IN (0,1)),
+ group_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+ confidence TEXT CHECK(confidence IS NULL OR confidence IN ('unknown','low','medium','high')),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX interactions_occurred ON interactions(occurred);
+CREATE TABLE interaction_participants(interaction_id TEXT NOT NULL REFERENCES interactions(id) ON DELETE CASCADE,
+ entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ role TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(interaction_id, entity_id));
+CREATE INDEX interaction_participants_entity ON interaction_participants(entity_id);
+-- Optional links to resources other modules own (a Chronos event, a Mnemosyne note). Only the
+-- reference is stored, plus the label seen when it was linked, so a link whose target was
+-- deleted stays readable as unresolved. Registered with Nexus as meridian.interaction-about.
+CREATE TABLE interaction_links(id TEXT PRIMARY KEY,
+ interaction_id TEXT NOT NULL REFERENCES interactions(id) ON DELETE CASCADE,
+ resource TEXT NOT NULL, label_hint TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0,
+ nexus_reference_id TEXT, nexus_state TEXT NOT NULL DEFAULT 'pending' CHECK(nexus_state IN ('pending','registered')),
+ created_at TEXT NOT NULL, UNIQUE(interaction_id, resource));
+CREATE INDEX interaction_links_state ON interaction_links(nexus_state);
+CREATE TRIGGER interaction_links_cleanup AFTER DELETE ON interaction_links
+ WHEN OLD.nexus_reference_id IS NOT NULL BEGIN
+ INSERT OR IGNORE INTO reference_cleanup(reference_id, queued_at)
+ VALUES(OLD.nexus_reference_id, strftime('%Y-%m-%dT%H:%M:%fZ','now')); END;
+-- Provenance rows (multi-source) extend to the new records.
+CREATE TRIGGER educations_drop_provenance AFTER DELETE ON educations BEGIN
+ DELETE FROM provenance WHERE record_kind='education' AND record_id=OLD.id; END;
+CREATE TRIGGER interests_drop_provenance AFTER DELETE ON interests BEGIN
+ DELETE FROM provenance WHERE record_kind='interest' AND record_id=OLD.id; END;
+CREATE TRIGGER interactions_drop_provenance AFTER DELETE ON interactions BEGIN
+ DELETE FROM provenance WHERE record_kind='interaction' AND record_id=OLD.id; END;
+""",
 ]
+
+# 0.7.0 (schema 7): going back to 0.6.x without a backup drops only what schema 7 added;
+# Education, Interests and Interactions recorded since are lost (queue their Nexus edges for
+# removal first, or reconcile Nexus afterwards). Everything else is untouched.
+SCHEMA_7_REVERSAL = """
+DROP TRIGGER IF EXISTS interaction_links_cleanup;
+DROP TABLE IF EXISTS interaction_links;
+DROP TABLE IF EXISTS interaction_participants;
+DROP TABLE IF EXISTS interactions;
+DROP TABLE IF EXISTS interests;
+DROP TABLE IF EXISTS educations;
+DELETE FROM provenance WHERE record_kind IN ('education','interest','interaction');
+PRAGMA user_version=6;
+"""
+
+# 0.5.0 (schema 6), all additive:
+# - relationships.kinship: how a parent or sibling relationship came about. NULL means "not
+#   recorded" and is what every older record keeps: nothing is reinterpreted as biological or
+#   adoptive without the user saying so. Parent: biological | adoptive | step. Sibling:
+#   biological_full | biological_half | biological (full or half not known) | adoptive | step.
+# - entities.name_given_first / name_family_first: the name as sorted first-name-first and
+#   last-name-first; entities.display_family_first: "Family, Given". Derived from the names
+#   (meridian.store.refresh), never edited, and compared with the `meridian_name` collation.
+# - settings 'people.sort' = 'family' on installations that already hold people, so their
+#   family-first ordering is kept until the owner changes it; new installations sort by first
+#   name. Reversal: docs/RELATIONSHIPS.md § 11.
+# Going back to 0.4.x (schema 5) without a backup: drops only what schema 6 added. Kinship and
+# preferences recorded since are lost; everything else is untouched. Needs SQLite 3.35+.
+SCHEMA_6_REVERSAL = """
+ALTER TABLE relationships DROP COLUMN kinship;
+ALTER TABLE entities DROP COLUMN name_given_first;
+ALTER TABLE entities DROP COLUMN name_family_first;
+ALTER TABLE entities DROP COLUMN display_family_first;
+DELETE FROM settings WHERE key IN ('people.sort', 'people.display');
+PRAGMA user_version=5;
+"""
+KINSHIP_VALUES = ("biological", "biological_full", "biological_half", "adoptive", "step")
+
+
+def schema_6(db):
+    from .store import refresh_names
+
+    values = ",".join(f"'{v}'" for v in KINSHIP_VALUES)
+    db.execute(
+        "ALTER TABLE relationships ADD COLUMN kinship TEXT"
+        f" CHECK(kinship IS NULL OR kinship IN ({values}))"
+    )
+    for column in ("name_given_first", "name_family_first", "display_family_first"):
+        db.execute(f"ALTER TABLE entities ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+    for row in db.execute("SELECT id FROM entities").fetchall():
+        refresh_names(db, row["id"])
+    if db.execute("SELECT 1 FROM entities WHERE kind='person' LIMIT 1").fetchone():
+        db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('people.sort', 'family')")
 
 
 def backfill_organization_names(db):
@@ -196,6 +324,7 @@ RECORD_TABLES = (
     "personal_dates",
     "accounts",
     "facts",
+    "interests",
 )
 
 
@@ -228,6 +357,7 @@ class Database:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
+        db.create_collation(collation.NAME, collation.compare)
         try:
             with db:
                 yield db

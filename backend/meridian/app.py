@@ -4,19 +4,47 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from . import VERSION, dates, importer, relations, store, timeline, vcard
+from . import (
+    VERSION,
+    dates,
+    images,
+    importer,
+    interactions,
+    relations,
+    shared,
+    store,
+    timeline,
+    vcard,
+)
 from .db import MIGRATIONS, Database
-from .models import EntityDoc, EventIn, MembershipIn, PersonDoc, RelationshipIn, Strict, TypeIn
+from .models import (
+    EDUCATION_KINDS,
+    EDUCATION_STATUS,
+    INTERACTION_TYPES,
+    INTEREST_CATEGORIES,
+    SENTIMENTS,
+    EntityDoc,
+    EventIn,
+    InteractionIn,
+    MembershipIn,
+    PersonDoc,
+    RelationshipIn,
+    SettingsIn,
+    SiblingsIn,
+    Strict,
+    TypeIn,
+)
 from .util import REF, UUID, fold, iso_now, uuid7
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,11 +60,31 @@ FILTERS = {
     "work": "EXISTS(SELECT 1 FROM employments w WHERE w.person_id=e.id)",
     "imported": "EXISTS(SELECT 1 FROM names n JOIN sources s ON s.id=n.source_id WHERE n.entity_id=e.id)",
 }
+# "name" follows the owner's sorting preference (store.name_order), with Slovak collation.
 SORTS = {
-    "name": "e.sort_key, e.display_name",
+    "name": None,
     "updated": "e.updated_at DESC, e.sort_key",
     "created": "e.created_at DESC, e.sort_key",
 }
+# Typing these in any person search means the user's own profile (@me), not a name.
+SELF_ALIASES = ("@", "@m", "@me")
+
+
+class CropIn(Strict):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+
+class ImageIn(Strict):
+    photo_id: str = Field(pattern=UUID.pattern)
+    crop: CropIn
+
+
+class AvatarsIn(Strict):
+    ids: list[str] = Field(max_length=120)
+    size: int = 128
 
 
 class SelfBody(Strict):
@@ -77,16 +125,27 @@ def readable(error: dict) -> str:
     message = re.sub(r"^(Value error|Assertion failed), ", "", error.get("msg", "Invalid value"))
     path = [str(p) for p in error.get("loc", ()) if p not in ("body",)]
     names = {"names": "Name", "contacts": "Contact", "addresses": "Address", "dates": "Date",
-             "employments": "Work", "accounts": "Account", "facts": "Detail", "sources": "Source"}  # fmt: skip
+             "employments": "Work", "accounts": "Account", "facts": "Detail", "sources": "Source",
+             "education": "Education", "interests": "Interest", "links": "Linked item"}  # fmt: skip
     if len(path) >= 2 and path[0] in names and path[1].isdigit():
         return f"{names[path[0]]} {int(path[1]) + 1}: {message}"
     fields = {"valid_from": "Start", "valid_until": "End", "context": "Context", "role": "Role",
               "label": "Name", "inverse": "Reverse name", "type": "Relationship type",
               "title": "Title", "starts": "Date", "ends": "End", "category": "Kind of event",
-              "participants": "Involved", "description": "Description"}  # fmt: skip
+              "participants": "Involved", "description": "Description", "summary": "Summary",
+              "occurred": "Date", "notes": "Notes", "group_id": "Group"}  # fmt: skip
     if path and path[0] in fields:
         return f"{fields[path[0]]}: {message}"
     return message
+
+
+def check_contact_revision(conn, entity_id, expected):
+    if expected is not None and expected != store.edit_revision(conn, entity_id):
+        raise HTTPException(
+            409,
+            "This contact changed in another session. Your edits are still here. "
+            "Reopen the contact to review the latest information before saving.",
+        )
 
 
 def create_app(data_dir=None):
@@ -94,6 +153,24 @@ def create_app(data_dir=None):
     style = styles()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db = db
+    # Edges that could not be registered earlier (Argus missing, Nexus restarting).
+    threading.Thread(target=images.sync_references, args=(db,), daemon=True).start()
+    threading.Thread(target=interactions.sync_references, args=(db,), daemon=True).start()
+
+    # Writes that can change birthdays or anniversaries: tell Chronos (through a Nexus event)
+    # to reconcile Meridian's dated items soon. Best effort; it reconciles every 15 minutes anyway.
+    date_writes = re.compile(r"^/api/(people(/|$)|trash/|import/commit$)")
+
+    @app.middleware("http")
+    async def announce_date_changes(request: Request, call_next):
+        response = await call_next(request)
+        if (
+            request.method != "GET"
+            and response.status_code < 300
+            and date_writes.match(request.url.path)
+        ):
+            threading.Thread(target=shared.announce_dates_changed, daemon=True).start()
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
@@ -165,7 +242,25 @@ def create_app(data_dir=None):
     @app.get("/api/state")
     def state():
         with db.connect() as conn:
-            return {"version": VERSION, "self": self_summary(conn), "counts": counts(conn)}
+            return {"version": VERSION, "self": self_summary(conn), "counts": counts(conn),
+                    "settings": settings_doc(conn)}  # fmt: skip
+
+    def settings_doc(conn):
+        prefs = store.preferences(conn)
+        return {"people_sort": prefs["people.sort"], "people_display": prefs["people.display"]}
+
+    @app.get("/api/settings")
+    def get_settings():
+        with db.connect() as conn:
+            return settings_doc(conn)
+
+    @app.put("/api/settings")
+    def put_settings(body: SettingsIn):
+        """People sorting and name display: independent, stored in Meridian's settings."""
+        values = {"people.sort": body.people_sort, "people.display": body.people_display}
+        with db.connect() as conn:
+            store.set_preferences(conn, {k: v for k, v in values.items() if v})
+            return settings_doc(conn)
 
     @app.get("/api/dashboard")
     def dashboard(today: str = ""):
@@ -212,11 +307,14 @@ def create_app(data_dir=None):
             for t in tokens
         )
 
+    def is_self_alias(q: str) -> bool:
+        return fold(q) in SELF_ALIASES
+
     @app.get("/api/people")
     def people(q: str = "", has: str = "", sort: str = "name", limit: int = 100, offset: int = 0):
         if sort not in SORTS:
             raise HTTPException(422, "Unknown sort")
-        where, params = search_clause(q[:200])
+        where, params = ("AND e.is_self=1", ()) if is_self_alias(q) else search_clause(q[:200])
         for name in [h for h in has.split(",") if h]:
             if name not in FILTERS:
                 raise HTTPException(422, "Unknown filter")
@@ -232,14 +330,24 @@ def create_app(data_dir=None):
 
     @app.get("/api/search")
     def search(q: str = "", kinds: str = "person"):
+        """Search for pickers. `@me` (and its beginnings `@`, `@m`) finds the person marked as
+        the user, through the existing self designation; "me" puts them first among matches.
+        The kinds asked for still apply: @me never returns anything but a Person."""
         wanted = tuple(k for k in kinds.split(",") if k in KINDS) or ("person",)
         if not fold(q):
             return {"people": [], "entities": []}
-        where, params = search_clause(q[:200])
         with db.connect() as conn:
+            me = self_summary(conn) if "person" in wanted else None
+            if is_self_alias(q):
+                found = [me] if me else []
+                return {"people": found, "entities": found, "alias": "me",
+                        "self_missing": "person" in wanted and not me}  # fmt: skip
+            where, params = search_clause(q[:200])
             found = store.summaries(
                 conn, "AND e.deleted_at IS NULL " + where, params, limit=12, kinds=wanted
             )
+            if me and fold(q) == "me":
+                found = [me] + [x for x in found if x["id"] != me["id"]][:11]
         return {"people": [x for x in found if x["kind"] == "person"][:8], "entities": found}
 
     @app.post("/api/people", status_code=201)
@@ -256,7 +364,9 @@ def create_app(data_dir=None):
     @app.put("/api/people/{pid}")
     def update_person(pid: str, body: PersonDoc):
         with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             person_or_404(conn, pid)
+            check_contact_revision(conn, pid, body.expected_revision)
             store.save_person(conn, body.model_dump(), entity_id=pid)
             return store.load_person(conn, pid)
 
@@ -297,12 +407,57 @@ def create_app(data_dir=None):
             entity = entity_or_404(conn, pid, include_deleted=True)
             if not entity["deleted_at"]:
                 raise HTTPException(409, "Move it to Trash first")
+            images.forget(conn, pid)
             conn.execute("DELETE FROM entities WHERE id=?", (pid,))
             conn.execute(
                 "INSERT OR REPLACE INTO tombstones(id,kind,deleted_at) VALUES(?,?,?)",
                 (pid, entity["kind"], iso_now()),
             )
             return {"deleted": True}
+
+    # ── Representative images (Argus photos) ─────────────────────────
+
+    def sync_later(entity_id=None):
+        return BackgroundTask(images.sync_references, db, entity_id)
+
+    @app.get("/api/photo-library")
+    def photo_library(cursor: str | None = None, limit: int = 24):
+        if cursor is not None and len(cursor) > 200:
+            raise HTTPException(422, "Invalid cursor")
+        return images.library(cursor, limit)
+
+    @app.get("/api/photo-preview/{photo_id}")
+    def photo_preview(photo_id: str, size: int = 1024):
+        try:
+            return images.preview(photo_id, size)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.put("/api/entities/{eid}/image")
+    def set_image(eid: str, body: ImageIn):
+        with db.connect() as conn:
+            entity_or_404(conn, eid)
+            try:
+                image = images.put(conn, eid, body.photo_id, body.crop.model_dump())
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        return JSONResponse(image, background=sync_later(eid))
+
+    @app.delete("/api/entities/{eid}/image")
+    def clear_image(eid: str):
+        with db.connect() as conn:
+            entity_or_404(conn, eid, include_deleted=True)
+            images.forget(conn, eid)
+        return JSONResponse({"image": None}, background=sync_later())
+
+    @app.post("/api/avatars")
+    def avatars(body: AvatarsIn):
+        images.retry_pending(db)
+        with db.connect() as conn:
+            try:
+                return images.avatars(conn, body.ids, body.size)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
 
     # ── Organizations and Groups ─────────────────────────────────────
 
@@ -336,7 +491,9 @@ def create_app(data_dir=None):
     def update_entity(eid: str, body: EntityDoc):
         doc = body.model_dump()
         with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             current = entity_or_404(conn, eid, kinds=("organization", "group"))
+            check_contact_revision(conn, eid, body.expected_revision)
             if doc.pop("kind") != current["kind"]:
                 raise HTTPException(422, "An entity keeps its kind")
             store.save_person(conn, doc, entity_id=eid)
@@ -375,8 +532,16 @@ def create_app(data_dir=None):
                 conn, body.label, body.inverse, body.symmetric, body.category
             )
 
+    def kinship_param(type_key, kinship):
+        try:
+            return relations.check_kinship(type_key, kinship or None)
+        except relations.Invalid as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @app.get("/api/similar-relationships")
-    def similar_relationships(subject_id: str, object_id: str, type: str, exclude: str = ""):
+    def similar_relationships(
+        subject_id: str, object_id: str, type: str, exclude: str = "", kinship: str = ""
+    ):
         """Existing relationships a new one may duplicate, asked before saving (the Nexus
         bridge passes only an error's message, so the check is its own request)."""
         if not (UUID.fullmatch(subject_id) and UUID.fullmatch(object_id)):
@@ -386,9 +551,63 @@ def create_app(data_dir=None):
             if not t:
                 raise HTTPException(422, "Choose a relationship type")
             rows = relations.similar(
-                conn, subject_id, object_id, type, exclude or None, t["symmetric"]
-            )
+                conn, subject_id, object_id, type, exclude or None, t["symmetric"],
+                kinship_param(type, kinship),
+            )  # fmt: skip
             return {"similar": [relations.relationship_record(conn, r, subject_id) for r in rows]}
+
+    @app.get("/api/active-relationships")
+    def active_relationships(subject_id: str, object_id: str, type: str, exclude: str = ""):
+        """Relationships between the two that may still be going on and that a new one of
+        `type` could take over from: shown to the user before saving, never ended unasked."""
+        if not (UUID.fullmatch(subject_id) and UUID.fullmatch(object_id)):
+            raise HTTPException(404, "Not found")
+        with db.connect() as conn:
+            return {
+                "active": relations.active_between(
+                    conn, subject_id, object_id, type, exclude or None
+                )
+            }
+
+    @app.get("/api/relationship-suggestion")
+    def relationship_suggestion(subject_id: str, object_id: str, type: str, kinship: str = ""):
+        """A start date to offer for a new relationship (a child's birth date for a parent
+        relationship). The form shows it as an editable suggestion."""
+        if not (UUID.fullmatch(subject_id) and UUID.fullmatch(object_id)):
+            raise HTTPException(404, "Not found")
+        with db.connect() as conn:
+            return relations.date_suggestion(
+                conn, subject_id, object_id, type, kinship_param(type, kinship)
+            )
+
+    @app.get("/api/sibling-suggestions")
+    def sibling_suggestions(relationship: str):
+        """Possible siblings after a parent relationship is saved; nothing is created."""
+        if not UUID.fullmatch(relationship):
+            raise HTTPException(404, "Relationship not found")
+        with db.connect() as conn:
+            try:
+                return relations.sibling_suggestions(conn, relationship)
+            except LookupError as exc:
+                raise HTTPException(404, "Relationship not found") from exc
+
+    @app.post("/api/sibling-suggestions/apply")
+    def apply_sibling_suggestions(body: SiblingsIn):
+        """The sibling records the user confirmed, in one transaction."""
+        with db.connect() as conn:
+            for item in body.items:
+                for eid in (item.a, item.b):
+                    row = conn.execute(
+                        "SELECT kind, deleted_at FROM entities WHERE id=?", (eid,)
+                    ).fetchone()
+                    if not row or row["kind"] != "person" or row["deleted_at"]:
+                        raise HTTPException(422, "Siblings are people in Meridian")
+            try:
+                return relation_errors(
+                    lambda: relations.apply_siblings(conn, [i.model_dump() for i in body.items])
+                )
+            except relations.Conflict as exc:
+                raise HTTPException(409, str(exc)) from exc
 
     def one_relationship(conn, rid, perspective=None):
         row = conn.execute("SELECT * FROM relationships WHERE id=?", (rid,)).fetchone()
@@ -397,8 +616,14 @@ def create_app(data_dir=None):
         return relations.relationship_record(conn, row, perspective)
 
     def save_relationship(body: RelationshipIn, rid=None):
+        """Create or update one relationship. On creation, `end_relationships` ends the chosen
+        ongoing relationships in the same transaction: either the new record and every ending
+        are saved, or none of them."""
         data = body.model_dump()
         data["sources"] = [x.model_dump() for x in body.sources]
+        ends = [x.model_dump() for x in body.end_relationships]
+        if rid and ends:
+            raise HTTPException(422, "Ending other relationships happens when creating one")
         with db.connect() as conn:
             try:
                 new = relation_errors(
@@ -410,6 +635,15 @@ def create_app(data_dir=None):
                      "similar": [relations.relationship_record(conn, r, body.subject_id) for r in exc.records]},
                     409,
                 )  # fmt: skip
+            if ends:
+                try:
+                    relation_errors(
+                        lambda: relations.end_for_transition(
+                            conn, body.subject_id, body.object_id, ends
+                        )
+                    )
+                except relations.Conflict as exc:
+                    raise HTTPException(409, str(exc)) from exc
             return one_relationship(conn, new, body.subject_id)
 
     @app.post("/api/relationships", status_code=201)
@@ -578,6 +812,88 @@ def create_app(data_dir=None):
             conn.execute("DELETE FROM events WHERE id=?", (eid,))
             return {"deleted": True}
 
+    # ── Interactions (0.7.0, owner decision D8) ──────────────────────
+
+    def interaction_or_404(conn, iid, resolve=False):
+        if not UUID.fullmatch(iid or ""):
+            raise HTTPException(404, "Not found")
+        found = interactions.get(conn, iid, resolve=resolve)
+        if not found:
+            raise HTTPException(404, "Not found")
+        return found
+
+    def sync_links():
+        # New edges, then removed ones (the shared cleanup queue).
+        interactions.sync_references(db)
+        images.sync_references(db)
+
+    def save_interaction(body: InteractionIn, iid=None):
+        data = body.model_dump()
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                new = relation_errors(lambda: interactions.save(conn, data, iid))
+            except interactions.Conflict as exc:
+                raise HTTPException(
+                    409,
+                    "This interaction changed in another session. Reopen it to see the latest "
+                    "version before saving.",
+                ) from exc
+            out = interactions.get(conn, new)
+        threading.Thread(target=sync_links, daemon=True).start()
+        return out
+
+    @app.get("/api/interactions")
+    def list_interactions(entity: str):
+        with db.connect() as conn:
+            entity_or_404(conn, entity, include_deleted=True)
+            interactions.retry_pending(db)
+            return {
+                "items": interactions.for_entity(conn, entity),
+                "types": list(INTERACTION_TYPES),
+            }
+
+    @app.post("/api/interactions", status_code=201)
+    def create_interaction(body: InteractionIn):
+        return save_interaction(body)
+
+    @app.get("/api/interactions/{iid}")
+    def get_interaction(iid: str):
+        with db.connect() as conn:
+            return interaction_or_404(conn, iid, resolve=True)
+
+    @app.put("/api/interactions/{iid}")
+    def update_interaction(iid: str, body: InteractionIn):
+        with db.connect() as conn:
+            interaction_or_404(conn, iid)
+        return save_interaction(body, iid)
+
+    @app.delete("/api/interactions/{iid}")
+    def delete_interaction(iid: str):
+        with db.connect() as conn:
+            interaction_or_404(conn, iid)
+            interactions.delete(conn, iid)
+        threading.Thread(target=sync_links, daemon=True).start()
+        return {"deleted": True}
+
+    @app.get("/api/interaction-link-candidates")
+    def interaction_link_candidates(entity: list[str] = Query(default=[])):
+        """Chronos events and Mnemosyne items already linked to these participants."""
+        ids = [e for e in entity if UUID.fullmatch(e)][:20]
+        with db.connect() as conn:
+            return interactions.candidates(conn, ids)
+
+    @app.get("/api/interaction-search")
+    def interaction_search(q: str = ""):
+        """Events, notes, tasks and places to link, from their owners' search projections."""
+        return interactions.search(q)
+
+    @app.get("/api/vocabularies")
+    def vocabularies():
+        return {"education_kinds": list(EDUCATION_KINDS), "education_status": list(EDUCATION_STATUS),
+                "interest_categories": list(INTEREST_CATEGORIES), "sentiments": list(SENTIMENTS),
+                "interaction_types": list(INTERACTION_TYPES)}  # fmt: skip
+
     @app.delete("/api/people/{pid}/imported/{rid}")
     def drop_imported(pid: str, rid: str):
         with db.connect() as conn:
@@ -652,25 +968,108 @@ def create_app(data_dir=None):
         ):
             raise HTTPException(403, "Resolver authentication required")
 
+    @app.post("/empyrean/v1/projections/dated-items")
+    def provide_dated_items(body: dict, request: Request):
+        """Birthdays and anniversaries as yearly dated items (meridian.shared), for requesters
+        the owner granted this scope (Chronos, opt-in there)."""
+        require_resolver(request)
+        query = body.get("query") if isinstance(body.get("query"), dict) else {}
+        with db.connect() as conn:
+            try:
+                return shared.dated_items(conn, query, body.get("cursor"))
+            except shared.BadQuery as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/empyrean/v1/projections/people-directory")
+    def provide_people_directory(body: dict, request: Request):
+        """Name search over live People for pickers in other modules: names only."""
+        require_resolver(request)
+        query = body.get("query") if isinstance(body.get("query"), dict) else {}
+        with db.connect() as conn:
+            try:
+                return shared.people_directory(conn, query, body.get("cursor"))
+            except shared.BadQuery as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/empyrean/v1/projections/contact-addresses")
+    def provide_contact_addresses(body: dict, request: Request):
+        """Contact addresses for Atlas's map. Meridian keeps owning them; Atlas reads them live."""
+        require_resolver(request)
+        if body.get("requester") not in shared.ADDRESS_READERS:
+            raise HTTPException(403, "This projection is not available to that module")
+        query = body.get("query") if isinstance(body.get("query"), dict) else {}
+        with db.connect() as conn:
+            try:
+                return shared.contact_addresses(conn, query, body.get("cursor"))
+            except shared.BadQuery as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/entities/{eid}/linked-from")
+    def linked_from(eid: str):
+        """Chronos events, Mnemosyne notes and other resources that link here and share the
+        link with Meridian, with their current labels from their owners."""
+        with db.connect() as conn:
+            entity = entity_or_404(conn, eid, include_deleted=True)
+        return shared.linked_from(entity["kind"], eid)
+
     @app.post("/empyrean/v1/resources/resolve")
     def protocol_resolve(body: dict, request: Request):
         """A Person's label for modules Nexus has granted a resolve scope; nothing more."""
         require_resolver(request)
         match = REF.fullmatch(str(body.get("resource", "")))
-        if not match or match[1] != "meridian" or match[2] != "person":
+        if match and match[1] == "meridian" and match[2] == "interaction":
+            with db.connect() as conn:
+                out, status = interactions.resolve(conn, match[3], body.get("requester"))
+            if not out:
+                raise HTTPException(status, "Unavailable")
+            return out
+        if not match or match[1] != "meridian" or match[2] not in KINDS:
             raise HTTPException(404, "Not found")
         with db.connect() as conn:
             row = conn.execute(
-                "SELECT display_name, deleted_at FROM entities WHERE id=? AND kind='person'",
-                (match[3],),
+                "SELECT display_name, deleted_at FROM entities WHERE id=? AND kind=?",
+                (match[3], match[2]),
             ).fetchone()
             if not row:
                 gone = conn.execute("SELECT 1 FROM tombstones WHERE id=?", (match[3],)).fetchone()
                 raise HTTPException(410 if gone else 404, "Unavailable")
             if row["deleted_at"]:
                 raise HTTPException(404, "Unavailable")
+            section = {"person": "people", "organization": "organizations", "group": "groups"}
             return {"resource": body["resource"], "label": row["display_name"][:200],
-                    "open_path": f"/people/{match[3]}"}  # fmt: skip
+                    "open_path": f"/{section[match[2]]}/{match[3]}"}  # fmt: skip
+
+    @app.get("/empyrean/v1/references/outgoing")
+    def protocol_outgoing(request: Request, limit: int = 100, cursor: str | None = None):
+        """Entity References v2: every edge Meridian owns, so Nexus can rebuild its index
+        (after a restore, for example) from Meridian's own records: representative-image edges
+        first (cursor = entity id), then Interaction links (cursor = "x:" + link id)."""
+        require_resolver(request)
+        links = cursor is not None and cursor.startswith("x:")
+        raw = cursor[2:] if links else cursor
+        if raw is not None and raw != "" and not UUID.fullmatch(raw):
+            raise HTTPException(422, "Invalid cursor")
+        limit = max(1, min(limit, 200))
+        with db.connect() as conn:
+            if not links:
+                page = images.outgoing(conn, limit, raw)
+                if page["next_cursor"]:
+                    return page
+                # Images done: continue with links in the same response when there is room.
+                rest = (
+                    interactions.outgoing(conn, limit - len(page["references"]), None)
+                    if len(page["references"]) < limit
+                    else {"references": [], "next_cursor": ""}
+                )
+                nxt = rest["next_cursor"]
+                return {
+                    "references": page["references"] + rest["references"],
+                    "next_cursor": None if nxt is None else "x:" + nxt,
+                }
+            page = interactions.outgoing(conn, limit, raw)
+            if page["next_cursor"]:
+                page["next_cursor"] = "x:" + page["next_cursor"]
+            return page
 
     async def receive_artifact(request):
         path = db.path.parent / f"restore-{uuid7()}.part"
@@ -819,7 +1218,11 @@ def create_app(data_dir=None):
         script = "\n;\n".join(
             [
                 (ROOT / "frontend/vendor/d3-force.bundle.js").read_text(encoding="utf-8"),
+                # Nexus navigation contract: the shared SDK, then Meridian's adapter.
+                (ROOT / "frontend/vendor/nexus-navigation.js").read_text(encoding="utf-8"),
+                (ROOT / "frontend/navigation.js").read_text(encoding="utf-8"),
                 (ROOT / "frontend/graph.js").read_text(encoding="utf-8"),
+                (ROOT / "frontend/ux.js").read_text(encoding="utf-8"),
                 app_js,
                 (ROOT / "frontend/timeline.js").read_text(encoding="utf-8"),
             ]

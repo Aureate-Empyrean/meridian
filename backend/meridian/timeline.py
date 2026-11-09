@@ -32,7 +32,11 @@ LIFE = {
 }
 SKIP_DATES = {"name_day"}  # recurs every year; not a moment in history
 MOMENT_ORDER = {"at": 0, "span": 0, "start": 1, "end": 2, "record": 3}
-RECORDS = ("relationship", "membership", "employment", "date", "event")
+RECORDS = ("relationship", "membership", "employment", "date", "event", "education", "interest",
+           "interaction")  # fmt: skip
+# An Education record is ongoing while studying (or when its status is not recorded and it has
+# no end); every other status means it has ended, even when the end date is not known.
+OPEN_STUDY = {"studying", ""}
 MAX_ENTRIES = 8000  # stays well inside the 2 MiB gateway limit (about 1.3 MB measured)
 
 
@@ -110,7 +114,7 @@ class Projection:
                                           "label": r["type"], "inverse": r["type"], "symmetric": True}  # fmt: skip
         self.types[t["key"]] = {k: t[k] for k in ("category", "label", "inverse", "symmetric")}
         base = {
-            "category": "relationship", "type": t["key"],
+            "category": "relationship", "type": t["key"], "kinship": r["kinship"],
             "detail": r["context"], "confidence": r["confidence"],
             "entities": [self.ref(r["subject_id"]), self.ref(r["object_id"])],
         }  # fmt: skip
@@ -144,6 +148,48 @@ class Projection:
         }  # fmt: skip
         state = "former" if w["valid_until"] else "current"
         return self.period("employment", w["id"], base, w["valid_from"], w["valid_until"], state)
+
+    def education(self, s):
+        if not self.live(s["person_id"]) or (
+            s["organization_id"] and not self.live(s["organization_id"])
+        ):
+            return []
+        people = [self.ref(s["person_id"])] + (
+            [self.ref(s["organization_id"])] if s["organization_id"] else []
+        )
+        detail = " · ".join(x for x in (s["program"], s["field"], s["degree"]) if x)
+        base = {
+            "category": "education", "type": s["kind"], "status": s["status"], "detail": detail,
+            "confidence": s["confidence"], "entities": people, "sources": 1 if s["source_id"] else 0,
+        }  # fmt: skip
+        state = "current" if s["status"] in OPEN_STUDY and not s["valid_until"] else "former"
+        return self.period("education", s["id"], base, s["valid_from"], s["valid_until"], state)
+
+    def interest(self, i):
+        """Only interests with a known period reach the Timeline ("favorite band X 2019-2021");
+        an undated interest is a standing fact on the profile, not a moment in history."""
+        if not self.live(i["entity_id"]) or not (i["valid_from"] or i["valid_until"]):
+            return []
+        base = {
+            "category": "interest", "type": i["sentiment"], "group": i["category"],
+            "detail": i["subject"], "context": i["context"], "confidence": i["confidence"],
+            "entities": [self.ref(i["entity_id"])], "sources": 1 if i["source_id"] else 0,
+        }  # fmt: skip
+        state = "former" if i["valid_until"] else "current"
+        return self.period("interest", i["id"], base, i["valid_from"], i["valid_until"], state)
+
+    def interaction(self, x, participants):
+        people = [p for p in participants if self.live(p)]
+        if participants and not people:
+            return []
+        group = [self.ref(x["group_id"])] if x["group_id"] and self.live(x["group_id"]) else []
+        return [_clean({
+            "id": f"interaction:{x['id']}", "moment": "at", "category": "interaction",
+            "type": x["type"], "title": x["summary"], "date": x["occurred"],
+            "approximate": bool(x["approximate"]), "confidence": x["confidence"],
+            "entities": [self.ref(p) for p in people] + group, "context_group": bool(group),
+            "sources": x["sources"], "editable": True,
+        })]  # fmt: skip
 
     # ── Occurrences: personal dates and events ─────────────────────────
 
@@ -193,6 +239,22 @@ EVENT_SQL = (
     "SELECT e.*, (SELECT count(*) FROM provenance p WHERE p.record_kind='event' AND p.record_id=e.id) "
     "AS sources FROM events e"
 )
+INTERACTION_SQL = (
+    "SELECT x.*, (SELECT count(*) FROM provenance p WHERE p.record_kind='interaction' AND p.record_id=x.id) "
+    "AS sources FROM interactions x"
+)
+
+
+def _interaction_people(conn, ids=None):
+    sql = "SELECT interaction_id, entity_id FROM interaction_participants"
+    args = ()
+    if ids is not None:
+        sql += f" WHERE interaction_id IN ({','.join('?' * len(ids))})"
+        args = tuple(ids)
+    out = {}
+    for r in conn.execute(sql + " ORDER BY interaction_id, position", args):
+        out.setdefault(r["interaction_id"], []).append(r["entity_id"])
+    return out
 
 
 def _entries(proj, conn, records=RECORDS, entity=None):
@@ -230,6 +292,28 @@ def _entries(proj, conn, records=RECORDS, entity=None):
         who = _participants(conn, [r["id"] for r in rows]) if entity else _participants(conn)
         for e in rows:
             out += proj.event(e, who.get(e["id"], []))
+    if "education" in records:
+        sql = "SELECT * FROM educations" + (
+            " WHERE person_id=? OR organization_id=?" if entity else ""
+        )
+        for s in conn.execute(sql, args):
+            out += proj.education(s)
+    if "interest" in records:
+        for i in conn.execute("SELECT * FROM interests" + where_date, args[:1]):
+            out += proj.interest(i)
+    if "interaction" in records:
+        if entity:
+            rows = conn.execute(
+                INTERACTION_SQL + " WHERE x.group_id=? OR x.id IN "
+                "(SELECT interaction_id FROM interaction_participants WHERE entity_id=?)",
+                (entity, entity),
+            ).fetchall()
+            who = _interaction_people(conn, [r["id"] for r in rows])
+        else:
+            rows = conn.execute(INTERACTION_SQL).fetchall()
+            who = _interaction_people(conn)
+        for x in rows:
+            out += proj.interaction(x, who.get(x["id"], []))
     return [_clean(x) for x in out]
 
 
@@ -251,6 +335,10 @@ def describe(proj, e):
         out["phrase"] = "member of"
     elif e["category"] == "employment":
         out["phrase"] = "works at"
+    elif e["category"] == "education":
+        out["phrase"] = "studied at" if e.get("state") == "former" else "studies at"
+    elif e["category"] == "interest":
+        out["phrase"] = (e.get("type") or "interested in").replace("_", " ")
     return out
 
 
@@ -355,6 +443,27 @@ def entry(conn, entry_id: str):
         if row:
             extra = {"note": row["note"], "entity_id": row["entity_id"], "label": row["label"],
                      "sources": [{"kind": "imported", "label": row["source_label"]}] if row["source_label"] else []}  # fmt: skip
+    elif record in ("education", "interest"):
+        table = "educations" if record == "education" else "interests"
+        row = conn.execute(
+            f"SELECT r.*, s.label AS source_label FROM {table} r LEFT JOIN sources s ON s.id=r.source_id WHERE r.id=?",
+            (rid,),
+        ).fetchone()
+        built = (
+            (proj.education(row) if record == "education" else proj.interest(row)) if row else []
+        )
+        if row:
+            owner = row["person_id"] if record == "education" else row["entity_id"]
+            extra = {"note": row["note"], "person_id": owner,
+                     "sources": [{"kind": "imported", "label": row["source_label"]}] if row["source_label"] else []}  # fmt: skip
+    elif record == "interaction":
+        row = conn.execute(INTERACTION_SQL + " WHERE x.id=?", (rid,)).fetchone()
+        built = proj.interaction(row, _interaction_people(conn, [rid]).get(rid, [])) if row else []
+        if row:
+            extra = {"notes": row["notes"], "sources": sources_of(conn, "interaction", rid),
+                     "roles": {r["entity_id"]: r["role"] for r in conn.execute(
+                         "SELECT entity_id, role FROM interaction_participants WHERE interaction_id=?", (rid,))},
+                     "created_at": row["created_at"], "updated_at": row["updated_at"]}  # fmt: skip
     else:
         row = conn.execute(EVENT_SQL + " WHERE e.id=?", (rid,)).fetchone()
         built = proj.event(row, _participants(conn, [rid]).get(rid, [])) if row else []
@@ -366,7 +475,7 @@ def entry(conn, entry_id: str):
     if not match:
         return None
     match = describe(proj, match)
-    if record in ("relationship", "membership", "employment"):
+    if record in ("relationship", "membership", "employment", "education", "interest"):
         match["period"] = [row["valid_from"], row["valid_until"]]
     table = proj.table()
     match["entities"] = [

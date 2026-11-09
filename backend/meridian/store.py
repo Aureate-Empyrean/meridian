@@ -1,5 +1,6 @@
 """Persistence of Person documents over the entity core and its record tables."""
 
+import hashlib
 import json
 
 from . import relations
@@ -20,7 +21,20 @@ SECTIONS = {
     "employments": ("employments", "person_id", ("organization_id", "title", "department", "role")),
     "accounts": ("accounts", "entity_id", ("service", "handle", "display_name", "url", "state")),
     "facts": ("facts", "entity_id", ("key", "value")),
+    # 0.7.0 (schema 7): dedicated records (owner decision D7).
+    "education": (
+        "educations",
+        "person_id",
+        ("organization_id", "kind", "department", "program", "field", "degree", "status",
+         "achievements"),
+    ),
+    "interests": (
+        "interests",
+        "entity_id",
+        ("category", "subject", "sentiment", "context", "target_kind", "target_ref"),
+    ),
 }  # fmt: skip
+NULLABLE = ("valid_from", "valid_until", "confidence", "date", "organization_id", "target_ref")
 
 
 def compose(name: dict) -> str:
@@ -46,6 +60,53 @@ def sort_key(names: list) -> str:
     if first.get("family"):
         return fold(f"{first['family']} {first.get('given', '')} {first.get('middle', '')}")
     return fold(name_text(first))
+
+
+def _joined(*parts) -> str:
+    return " ".join(p for p in parts if p)
+
+
+def name_orders(names: list) -> tuple:
+    """(first-name-first, last-name-first, "Last, First" display) for the main name.
+
+    Structured parts decide; prefixes and suffixes never take part in sorting. A name stored
+    only as one piece of text ("Vzorko Kvázimenný" without parts) is used as it is in every
+    order: Meridian does not guess which word is the family name."""
+    full = [n for n in names if n.get("kind") == "full"] or names
+    if not full:
+        return "", "", ""
+    n = full[0]
+    given, middle, family = n.get("given", ""), n.get("middle", ""), n.get("family", "")
+    if not (given or middle or family):
+        text = name_text(n)
+        return text, text, text
+    given_first = _joined(given, middle, family)
+    family_first = _joined(family, given, middle)
+    if family and (given or middle):
+        shown = f"{family}, {_joined(n.get('prefix'), given, middle)}"
+        if n.get("suffix"):
+            shown += f", {n['suffix']}"
+    else:
+        shown = name_text(n)
+    return given_first, family_first, shown
+
+
+def refresh_names(conn, entity_id: str):
+    """Recompute only the name-order columns (also used by the schema 6 migration)."""
+    names = [dict(r) for r in conn.execute(
+        "SELECT * FROM names WHERE entity_id=? ORDER BY position", (entity_id,))]  # fmt: skip
+    if not names:
+        # Entities created before they had name records keep their display name.
+        row = conn.execute("SELECT display_name FROM entities WHERE id=?", (entity_id,)).fetchone()
+        text = row[0] if row and row[0] != "Unnamed" else ""
+        orders = (text, text, text)
+    else:
+        orders = name_orders(names)
+    conn.execute(
+        "UPDATE entities SET name_given_first=?, name_family_first=?, display_family_first=? "
+        "WHERE id=?",
+        (*orders, entity_id),
+    )
 
 
 def address_text(address: dict) -> str:
@@ -80,9 +141,9 @@ def organization_id(conn, name: str, now: str):
         return row["id"]
     oid = uuid7()
     conn.execute(
-        "INSERT INTO entities(id,kind,display_name,sort_key,search_text,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (oid, "organization", name, key, key, now, now),
+        "INSERT INTO entities(id,kind,display_name,sort_key,search_text,name_given_first,"
+        "name_family_first,display_family_first,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (oid, "organization", name, key, key, name, name, name, now, now),
     )
     conn.execute(
         "INSERT INTO names(id,entity_id,kind,value,position,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
@@ -105,6 +166,24 @@ def work_organization(conn, values: dict, now: str):
     ):
         return oid
     return organization_id(conn, name, now)
+
+
+def edit_revision(conn, entity_id):
+    """Token for owned contact data only; relationships remain independently owned."""
+    entity = conn.execute(
+        "SELECT kind, notes, deleted_at FROM entities WHERE id=?", (entity_id,)
+    ).fetchone()
+    content = [dict(entity)]
+    for table, owner, _ in SECTIONS.values():
+        content.append(
+            [
+                dict(row)
+                for row in conn.execute(
+                    f"SELECT * FROM {table} WHERE {owner}=? ORDER BY id", (entity_id,)
+                )
+            ]
+        )
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
 def save_person(conn, doc: dict, entity_id=None, source_id=None, keep=False, kind="person"):
@@ -138,7 +217,7 @@ def save_person(conn, doc: dict, entity_id=None, source_id=None, keep=False, kin
         for offset, item in enumerate(doc.get(section, [])):
             position = base + offset
             values = dict(item)
-            if section == "employments":
+            if section in ("employments", "education"):
                 values["organization_id"] = work_organization(conn, values, now)
             if section in ("contacts", "addresses"):
                 group = values.get("channel", "address")
@@ -151,8 +230,7 @@ def save_person(conn, doc: dict, entity_id=None, source_id=None, keep=False, kin
                 values["approximate"] = 1 if values.get("approximate") else 0
             row = {k: values.get(k) for k in fields + COMMON}
             for k, v in row.items():
-                if v is None and k not in ("valid_from", "valid_until", "confidence", "date",
-                                           "organization_id"):  # fmt: skip
+                if v is None and k not in NULLABLE:
                     row[k] = ""
             extra = {}
             if section == "contacts":
@@ -205,6 +283,16 @@ def refresh(conn, entity_id: str, now=None):
         (entity_id,),
     ):
         texts += [r["title"], r["department"], r["display_name"] or ""]
+    for r in conn.execute(
+        "SELECT e.program, e.field, e.degree, e.department, o.display_name FROM educations e "
+        "LEFT JOIN entities o ON o.id=e.organization_id WHERE e.person_id=?",
+        (entity_id,),
+    ):
+        texts += [r["program"], r["field"], r["degree"], r["department"], r["display_name"] or ""]
+    texts += [
+        r["subject"]
+        for r in conn.execute("SELECT subject FROM interests WHERE entity_id=?", (entity_id,))
+    ]
     for r in conn.execute("SELECT * FROM accounts WHERE entity_id=?", (entity_id,)):
         texts += [r["service"], r["handle"], r["display_name"]]
     texts += [
@@ -213,15 +301,60 @@ def refresh(conn, entity_id: str, now=None):
     notes = conn.execute("SELECT notes FROM entities WHERE id=?", (entity_id,)).fetchone()[0]
     texts.append(notes)
     conn.execute(
-        "UPDATE entities SET display_name=?, sort_key=?, search_text=?, updated_at=? WHERE id=?",
+        "UPDATE entities SET display_name=?, sort_key=?, search_text=?, updated_at=?, "
+        "name_given_first=?, name_family_first=?, display_family_first=? WHERE id=?",
         (
             display_name(names) or "Unnamed",
             sort_key(names),
             fold(" ".join(t for t in texts if t)),
             now or iso_now(),
+            *name_orders(names),
             entity_id,
         ),
     )
+
+
+# Owner preferences, in the settings table (key -> value). Absent keys mean the default for a
+# new installation; the schema 6 migration stores 'people.sort' = 'family' for installations
+# that already had people, so their ordering does not change under them.
+PREFERENCES = {"people.sort": ("given", "family"), "people.display": ("given", "family")}
+DEFAULTS = {"people.sort": "given", "people.display": "given"}
+
+
+def preferences(conn) -> dict:
+    stored = {
+        r["key"]: r["value"]
+        for r in conn.execute(
+            f"SELECT key, value FROM settings WHERE key IN ({','.join('?' * len(PREFERENCES))})",
+            tuple(PREFERENCES),
+        )
+    }
+    return {
+        k: stored[k] if stored.get(k) in allowed else DEFAULTS[k]
+        for k, allowed in PREFERENCES.items()
+    }
+
+
+def set_preferences(conn, values: dict) -> dict:
+    for k, v in values.items():
+        if k not in PREFERENCES or v not in PREFERENCES[k]:
+            raise ValueError(f"Unknown setting {k}")
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (k, v),
+        )
+    return preferences(conn)
+
+
+def name_order(conn, alias="e") -> str:
+    """ORDER BY for names under the owner's sorting preference, with Slovak collation. The
+    whole ordering happens in the query, so pagination never sorts only a loaded page."""
+    column = (
+        "name_family_first" if preferences(conn)["people.sort"] == "family" else "name_given_first"
+    )
+    a = f"{alias}." if alias else ""
+    return f"{a}{column} COLLATE meridian_name, {a}display_name COLLATE meridian_name, {a}id"
 
 
 def source_labels(conn) -> dict:
@@ -254,7 +387,8 @@ def load_person(conn, entity_id: str, include_deleted=False, kinds=("person",)):
         return out
 
     employments = records("employments", "person_id")
-    for item in employments:
+    education = records("educations", "person_id")
+    for item in employments + education:
         org = item.pop("organization_id")
         name = (
             conn.execute("SELECT display_name FROM entities WHERE id=?", (org,)).fetchone()
@@ -276,19 +410,45 @@ def load_person(conn, entity_id: str, include_deleted=False, kinds=("person",)):
              "deleted": bool(w["deleted_at"])}
             for w in conn.execute(
                 "SELECT w.*, p.display_name, p.deleted_at FROM employments w JOIN entities p ON p.id=w.person_id "
-                "WHERE w.organization_id=? ORDER BY w.valid_until IS NOT NULL, p.sort_key",
+                f"WHERE w.organization_id=? ORDER BY w.valid_until IS NOT NULL, {name_order(conn, 'p')}",
                 (entity_id,),
             )
         ]
         if row["kind"] == "organization"
         else []
     )  # fmt: skip
+    # People who studied at an Organization, from their Education records (derived).
+    studied_here = (
+        [
+            {"id": s["id"], "person_id": s["person_id"], "person_name": s["display_name"],
+             "kind": s["kind"], "program": s["program"], "field": s["field"], "degree": s["degree"],
+             "status": s["status"], "valid_from": s["valid_from"], "valid_until": s["valid_until"],
+             "deleted": bool(s["deleted_at"])}
+            for s in conn.execute(
+                "SELECT s.*, p.display_name, p.deleted_at FROM educations s JOIN entities p ON p.id=s.person_id "
+                f"WHERE s.organization_id=? ORDER BY s.valid_until IS NOT NULL, {name_order(conn, 'p')}",
+                (entity_id,),
+            )
+        ]
+        if row["kind"] == "organization"
+        else []
+    )  # fmt: skip
+    from .images import get as image_of
+
     return {
         "id": row["id"],
+        "edit_revision": edit_revision(conn, entity_id),
         "kind": row["kind"],
+        "image": image_of(conn, row["id"]),
         "relationships": connections["relationships"],
         "memberships": connections["memberships"],
         "work_here": work_here,
+        "studied_here": studied_here,
+        "interaction_count": conn.execute(
+            "SELECT count(*) FROM interactions i WHERE i.group_id=? OR i.id IN "
+            "(SELECT interaction_id FROM interaction_participants WHERE entity_id=?)",
+            (entity_id, entity_id),
+        ).fetchone()[0],
         "display_name": row["display_name"],
         "is_self": bool(row["is_self"]),
         "notes": row["notes"],
@@ -300,6 +460,8 @@ def load_person(conn, entity_id: str, include_deleted=False, kinds=("person",)):
         "addresses": records("addresses", "entity_id"),
         "dates": records("personal_dates", "entity_id"),
         "employments": employments,
+        "education": education,
+        "interests": records("interests", "entity_id"),
         "accounts": records("accounts", "entity_id"),
         "facts": records("facts", "entity_id"),
         "identifiers": [
@@ -318,15 +480,18 @@ def summaries(
     conn,
     where="",
     params=(),
-    order="e.sort_key, e.display_name",
+    order=None,
     limit=200,
     offset=0,
     kinds=("person",),
 ):
-    """List rows for people: primary phone/email and current work, without loading everything."""
+    """List rows for people: primary phone/email and current work, without loading everything.
+    Without an explicit order, rows follow the owner's name-sorting preference."""
+    order = order or name_order(conn)
     rows = conn.execute(
         f"""
-        SELECT e.id, e.kind, e.display_name, e.is_self, e.updated_at, e.created_at, e.deleted_at,
+        SELECT e.id, e.kind, e.display_name, e.display_family_first, e.is_self, e.updated_at,
+          e.created_at, e.deleted_at,
           (SELECT count(*) FROM memberships m WHERE m.group_id=e.id AND m.state<>'former') AS members,
           (SELECT count(DISTINCT w.person_id) FROM employments w WHERE w.organization_id=e.id AND w.valid_until IS NULL) AS staff,
           (SELECT n.value FROM names n WHERE n.entity_id=e.id AND n.kind='preferred' ORDER BY n.position LIMIT 1) AS preferred,
