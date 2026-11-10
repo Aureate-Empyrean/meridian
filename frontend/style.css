@@ -5757,14 +5757,22 @@ mark {
   border-radius: 6px;
 }
 
-/* Search-as-you-type fields: real-world addresses and existing Organizations. */
+/* Search-as-you-type fields: real-world addresses and existing Organizations. The list floats
+   over the form, anchored to its field, so opening it never moves another field; comboPlace
+   (combobox.js) opens it upwards and shortens it when there is no room below. */
 .combo {
   position: relative;
 }
 .combo-list {
-  margin-top: 4px;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
   max-height: 260px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   border: 1px solid var(--m-line-strong);
   border-radius: var(--m-r-list);
   background: var(--m-overlay);

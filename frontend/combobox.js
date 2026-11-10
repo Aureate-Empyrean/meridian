@@ -22,12 +22,51 @@ function comboClose(input) {
   combo.options = [];
   combo.active = -1;
 }
+/** The visible area the list must fit in: the viewport, narrowed by any scrolling or clipping
+    container around the field (the editor body), so the list is never cut off or drawn under
+    the editor's buttons. */
+function comboBounds(input) {
+  let top = 0;
+  let bottom = innerHeight;
+  for (let el = input.parentElement; el && el !== document.body; el = el.parentElement) {
+    if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(el).overflowY)) continue;
+    const r = el.getBoundingClientRect();
+    top = Math.max(top, r.top);
+    bottom = Math.min(bottom, r.bottom);
+  }
+  return { top, bottom };
+}
+/** Below the field when it fits, otherwise on the side with more room, shortened to fit. The
+    list is positioned inside the field's .combo, so it moves with the field when the editor
+    scrolls; this only decides the side and the height. */
+function comboPlace(input) {
+  const list = comboListOf(input);
+  if (list.hidden) return;
+  const gap = 4;
+  const margin = 8;
+  const field = input.getBoundingClientRect();
+  const bounds = comboBounds(input);
+  const below = bounds.bottom - field.bottom - gap - margin;
+  const above = field.top - bounds.top - gap - margin;
+  // A scrolling list is keyboard-focusable in Chromium; Tab must leave the field, not enter it.
+  list.tabIndex = -1;
+  list.style.maxHeight = "";
+  const limit = parseFloat(getComputedStyle(list).maxHeight) || Infinity;
+  const wanted = Math.min(list.scrollHeight, limit);
+  const up = wanted > below && above > below;
+  const top = input.offsetTop;
+  list.style.top = up ? "auto" : `${top + input.offsetHeight + gap}px`;
+  list.style.bottom = up ? `${input.offsetParent.clientHeight - top + gap}px` : "auto";
+  list.style.maxHeight = `${Math.max(48, Math.floor(Math.min(limit, up ? above : below)))}px`;
+  list.classList.toggle("is-above", up);
+}
 function comboMessage(input, text) {
   const list = comboListOf(input);
   list.innerHTML = `<p class="combo-note">${esc(text)}</p>`;
   list.hidden = false;
   input.setAttribute("aria-expanded", "true");
   comboOf(input).options = [];
+  comboPlace(input);
 }
 function comboShow(input, options, foot = "") {
   const combo = comboOf(input);
@@ -37,6 +76,7 @@ function comboShow(input, options, foot = "") {
   list.innerHTML = options.map((o, i) => `<button type="button" class="combo-option" role="option" id="${list.id}-${i}" data-combo-option="${i}" aria-selected="false" tabindex="-1"><span class="primary">${esc(o.primary)}</span>${o.secondary ? `<span class="secondary">${esc(o.secondary)}</span>` : ""}</button>`).join("") + (foot ? `<p class="combo-foot">${esc(foot)}</p>` : "");
   list.hidden = false;
   input.setAttribute("aria-expanded", "true");
+  comboPlace(input);
 }
 function comboHighlight(input, index) {
   const combo = comboOf(input);
@@ -108,6 +148,13 @@ document.addEventListener("focusout", (event) => {
   const input = event.target.closest?.("[data-combo-input]");
   if (input && !input.closest(".combo").contains(event.relatedTarget)) comboClose(input);
 });
+// An open list follows its field; after scrolling or resizing, the side with room may change.
+const comboReplace = (event) => {
+  const input = document.activeElement?.closest?.("[data-combo-input]");
+  if (input && !(event?.target instanceof Element && event.target.closest(".combo-list"))) comboPlace(input);
+};
+document.addEventListener("scroll", comboReplace, true);
+addEventListener("resize", comboReplace);
 
 /* ── Existing Organizations: for work and education ── */
 COMBO_SOURCES.org = {
