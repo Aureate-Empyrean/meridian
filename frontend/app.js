@@ -1881,6 +1881,13 @@ try {
 }
 const KIND_OF = { p: "person", o: "organization", g: "group" };
 const FORMER_PHRASE = { "works at": "worked at", employs: "employed" };
+/** A relationship as one sentence: "{a} is parent of {b}", but "{a} studies at {b}" when the
+    phrase has its own verb. `phrase` is the English phrase and is translated here; `former`
+    reads a linking verb in the past ("was married to"). */
+function relationSentence(a, phrase, b, former = false) {
+  const template = MeridianUX.relationIsVerbPhrase(phrase) ? "{a} {p} {b}" : former ? "{a} was {p} {b}" : "{a} is {p} {b}";
+  return t(template, { a, p: t(phrase), b });
+}
 
 /** The canvas silhouettes as inline SVG, so the interface and the graph speak alike. */
 function glyph(kind, size = 14) {
@@ -2281,8 +2288,8 @@ async function showGraphDetails(sel, info) {
   const status = (r) => [period(r), r.state === "former" ? t("ended") : r.state === "unknown" ? t("state unknown") : "", CONFIDENCE_TAG[r.confidence] ? t(CONFIDENCE_TAG[r.confidence]).toLowerCase() : "", r.sources?.length ? sourceText(r.sources) : ""].filter(Boolean);
   const record = (sentence, r, extra = "") => `<li class="gp-record ${r.state === "former" ? "is-past" : ""}"><p class="primary">${esc(sentence)}</p>${extra || status(r).length ? `<p class="secondary">${[extra, ...status(r).map(esc)].filter(Boolean).join(" · ")}</p>` : ""}</li>`;
   const named = (side) => side.display_name;
-  const rels = records.relationships.map((r) => record(`${named(r.subject)} ${r.state === "former" && FORMER_PHRASE[r.label] ? FORMER_PHRASE[r.label] : r.label} ${named(r.object)}`, r, r.context ? `“${esc(r.context)}”` : ""));
-  const members = records.memberships.map((m) => record(`${m.member.display_name} ${t("member of")} ${m.group.display_name}`, m, m.role ? esc(m.role) : ""));
+  const rels = records.relationships.map((r) => record(relationSentence(named(r.subject), r.state === "former" && FORMER_PHRASE[r.label] ? FORMER_PHRASE[r.label] : r.label, named(r.object), r.state === "former"), r, r.context ? `“${esc(r.context)}”` : ""));
+  const members = records.memberships.map((m) => record(relationSentence(m.member.display_name, "member of", m.group.display_name, m.state === "former"), m, m.role ? esc(m.role) : ""));
   const work = records.employments.map((w) => record(`${w.person_name} ${w.state === "former" ? t("worked at") : t("works at")} ${w.organization_name}`, w, esc([w.title, w.department].filter(Boolean).join(" · "))));
   $("#graph-panel-body").innerHTML = `<ul class="gp-records">${[...rels, ...members, ...work].join("")}</ul>
     <div class="gp-actions"><button class="ae-btn ae-btn--sm" data-act="graph-open" data-id="${esc(a.id)}" data-kind="${KIND_OF[a.kind]}">${esc(t("Open {name}", { name: a.label }))}</button><button class="ae-btn ae-btn--sm" data-act="graph-open" data-id="${esc(b.id)}" data-kind="${KIND_OF[b.kind]}">${esc(t("Open {name}", { name: b.label }))}</button></div>
@@ -2609,7 +2616,7 @@ async function openRelation(record, invoker) {
     eyebrow: p.display_name,
     title: record ? t("Relationship") : t("New relationship"),
     body: `<div class="rel-sentence">
-        <div class="rel-self">${avatar(p.display_name, p.id, `sm is-${p.kind}`)}<span>${esc(p.display_name)}</span><span class="muted">${esc(t("is"))}</span></div>
+        <div class="rel-self">${avatar(p.display_name, p.id, `sm is-${p.kind}`)}<span>${esc(p.display_name)}</span><span class="muted" id="rel-is">${esc(t("is"))}</span></div>
         <div class="ae-field"><label class="ae-label" for="rel-type">${esc(t("Relationship"))}</label><select class="ae-select" id="rel-type">${typeOptions(p.kind, other?.kind, value)}</select></div>
         <div class="ae-field"><span class="ae-label" id="rel-target-label">${esc(t("Of whom"))}</span>${entityPicker("rel-target", { kinds: ["person", "organization", "group"], label: t("Search people, organizations and groups"), value: other })}</div>
       </div>
@@ -2741,11 +2748,24 @@ function refreshTypeOptions() {
   $("#rel-custom").hidden = select.value !== "custom";
   readsLine();
 }
+/** The “is” after the anchor's name, only while the chosen phrase needs one: “is parent of”,
+    but “studies at” or “has student”. Shown while no relationship is chosen. */
+function relSelfVerb(value) {
+  let phrase = "";
+  if (value === "custom") phrase = $("#rel-c-label").value;
+  else if (value) {
+    const [key, dir] = value.split("|");
+    const tp = REL_TYPES.types.find((x) => x.key === key);
+    phrase = (dir === "in" ? tp?.inverse : tp?.label) || "";
+  }
+  $("#rel-is").hidden = MeridianUX.relationIsVerbPhrase(phrase);
+}
 /** The sentence the record will say, from this side, so direction is never ambiguous. */
 function readsLine() {
   const line = $("#rel-reads");
   if (!line) return;
   const value = $("#rel-type").value;
+  relSelfVerb(value);
   const target = $("#rel-target [data-picked]");
   const name = target.dataset.name;
   if (!value || !target.value || !name) return (line.textContent = "");
@@ -2763,7 +2783,7 @@ function readsLine() {
   }
   if (!phrase) return (line.textContent = "");
   const context = $("#rel-context").value.trim();
-  line.innerHTML = `${icon("info")}<span>${esc(t("Reads as: {a} is {p} {b}; and from {b}’s profile: {b} is {q} {a}.", { a: me, p: phrase, b: name, q: back }))}${context ? ` ${esc(t("Shown as “{c}”.", { c: context }))}` : ""}</span>`;
+  line.innerHTML = `${icon("info")}<span>${esc(t("Reads as: {s}; and from {b}’s profile: {r}.", { s: relationSentence(me, phrase, name), b: name, r: relationSentence(name, back, me) }))}${context ? ` ${esc(t("Shown as “{c}”.", { c: context }))}` : ""}</span>`;
 }
 async function saveRelation(button, allowSimilar = false) {
   const box = $("#form-error");
@@ -2837,7 +2857,7 @@ async function saveRelation(button, allowSimilar = false) {
 function showTransition(active, body) {
   const preselected = new Set(MeridianUX.preselectedEnds(active));
   const tp = REL_TYPES.types.find((x) => x.key === body.type);
-  const sentence = (r) => `${r.subject.display_name} ${t(r.label)} ${r.object.display_name}`;
+  const sentence = (r) => relationSentence(r.subject.display_name, r.label, r.object.display_name);
   const rows = active
     .map((r) => {
       const facts = [period(r) || t("start not recorded"), r.state === "unknown" ? t("whether it continues is not recorded") : t("no end date"), r.context ? `“${r.context}”` : ""].filter(Boolean).join(" · ");
