@@ -191,6 +191,7 @@ the Nexus bridge; screenshots in `docs/screenshots/0.5.0/`):
 ```bash
 node tests/ux.test.cjs
 node tests/navigation-routes.test.cjs
+node tests/relationship-sentences.test.cjs
 docker run -d --name meridian-ux-harness -p 127.0.0.1:17399:8000 -v G:/AureateEmpyrean/meridian/tests/e2e:/harness:ro -e PYTHONPATH=/app/backend -e MERIDIAN_DATA=/tmp/h meridian:0.5.0 python /harness/harness.py 8000
 PLAYWRIGHT_PATH=G:/AureateEmpyrean/mnemosyne/node_modules/playwright node tests/e2e/ux_e2e.cjs
 docker rm -f meridian-ux-harness
