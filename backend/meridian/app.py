@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import (
     VERSION,
+    addresses,
     dates,
     images,
     importer,
@@ -34,6 +35,8 @@ from .models import (
     INTERACTION_TYPES,
     INTEREST_CATEGORIES,
     SENTIMENTS,
+    AddressSearchConsent,
+    AddressSearchIn,
     EntityDoc,
     EventIn,
     InteractionIn,
@@ -248,6 +251,26 @@ def create_app(data_dir=None):
     def settings_doc(conn):
         prefs = store.preferences(conn)
         return {"people_sort": prefs["people.sort"], "people_display": prefs["people.display"]}
+
+    @app.get("/api/address-search/status")
+    def address_search_status():
+        with db.connect() as conn:
+            consent = addresses.enabled(conn)
+        return addresses.status(consent)
+
+    @app.put("/api/address-search/consent")
+    def address_search_consent(body: AddressSearchConsent):
+        with db.connect() as conn:
+            addresses.set_enabled(conn, body.enabled)
+        return {"consent": body.enabled}
+
+    # POST, so the text typed is never part of a URL or an access log.
+    @app.post("/api/address-search")
+    def address_search(body: AddressSearchIn):
+        with db.connect() as conn:
+            if not addresses.enabled(conn):
+                return {"availability": "consent_required", "items": []}
+        return addresses.search(body.q)
 
     @app.get("/api/settings")
     def get_settings():
@@ -1225,6 +1248,7 @@ def create_app(data_dir=None):
                 (ROOT / "frontend/ux.js").read_text(encoding="utf-8"),
                 app_js,
                 (ROOT / "frontend/timeline.js").read_text(encoding="utf-8"),
+                (ROOT / "frontend/combobox.js").read_text(encoding="utf-8"),
             ]
         )
         html = (ROOT / "frontend/index.html").read_text(encoding="utf-8")

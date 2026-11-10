@@ -864,12 +864,13 @@ function ixRow(x, focusId, hidden) {
     x.links.length ? plural(x.links.length, "{count} linked item", "{count} linked items") : "",
     x.confidence === "low" ? t("uncertain") : "",
   ].filter(Boolean);
-  return `<div class="vrow ix-row" ${hidden ? "hidden" : ""}><span class="label">${esc(ixType(x.type))}</span><span class="value strong">${esc(x.summary)}<span class="sub">${esc(bits.join(" · "))}</span></span><span class="acts">${act("edit", t("Edit interaction"), `data-act="ix-edit" data-id="${esc(x.id)}"`)}</span></div>`;
+  return `<div class="vrow ix-row" data-interaction="${esc(x.id)}" ${hidden ? "hidden" : ""}><span class="label">${esc(ixType(x.type))}</span><span class="value strong">${esc(x.summary)}<span class="sub">${esc(bits.join(" · "))}</span></span><span class="acts">${act("edit", t("Edit interaction"), `data-act="ix-edit" data-id="${esc(x.id)}"`)}</span></div>`;
 }
 function interactionsSection(items, count) {
   const shown = items.length || count;
   const more = items.length > IX_PREVIEW ? `<button class="ae-btn ae-btn--quiet ae-btn--sm ix-more" data-act="ix-more">${esc(t("Show all {n}", { n: items.length }))}</button>` : "";
-  const body = items.length ? items.map((x, i) => ixRow(x, state.person?.id, i >= IX_PREVIEW)).join("") : `<p class="gp-hint">${esc(t("Loading…"))}</p>`;
+  const target = state.route.interaction;
+  const body = items.length ? items.map((x, i) => ixRow(x, state.person?.id, i >= IX_PREVIEW && x.id !== target)).join("") : `<p class="gp-hint">${esc(t("Loading…"))}</p>`;
   return `<section class="psection" data-section="interactions"><div class="section-head"><h3>${icon("chat")}${esc(t("Interactions"))} <span class="count">${shown}</span></h3><button class="ae-btn ae-btn--quiet ae-btn--sm" data-act="add-interaction">${icon("plus")}<span>${esc(t("Add interaction"))}</span></button></div><div class="list vrows">${body}</div>${more}</section>`;
 }
 async function loadInteractions(p) {
@@ -878,6 +879,14 @@ async function loadInteractions(p) {
   const result = await api("/interactions" + query({ entity: p.id })).catch(() => null);
   if (!box.isConnected || state.person?.id !== p.id || !result) return;
   box.innerHTML = interactionsSection(result.items, result.items.length);
+  // Opened from a link to one Interaction: show that one, not just the participant's profile.
+  const row = state.route.interaction && $(`[data-interaction="${CSS.escape(state.route.interaction)}"]`, box);
+  if (row) {
+    row.classList.add("is-target");
+    row.tabIndex = -1;
+    row.scrollIntoView({ block: "center", behavior: "auto" });
+    row.focus({ preventScroll: true });
+  }
 }
 async function reloadProfile() {
   const p = state.person;

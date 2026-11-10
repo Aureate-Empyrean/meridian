@@ -30,7 +30,7 @@ async function api(path, method = 'GET', body) {
     await tab('notes'); await f.locator('#notes').fill('Together');
     await tab('employments'); await field('organization').fill('Draft organization');
     await tab('accounts'); await field('service').fill('github'); await field('handle').fill('draft-user');
-    await tab('addresses'); await field('locality').fill('Draft city');
+    await tab('addresses'); await field('label').fill('Draft label');
     await tab('names'); await field('value').fill('Unified saved name');
     await tab('facts'); await field('key').fill('Favourite'); await field('value').fill('Blue');
     await tab('dates');
@@ -51,7 +51,7 @@ async function api(path, method = 'GET', body) {
     assert.equal(await f.locator('#panel-title').textContent(), 'Contact');
     let current = await api('/people/' + person.id);
     assert.equal(current.notes, 'Together'); assert.equal(current.employments.length, 1); assert.equal(current.contacts.length, 1);
-    assert.equal(current.accounts[0].handle, 'draft-user'); assert.equal(current.addresses[0].locality, 'Draft city');
+    assert.equal(current.accounts[0].handle, 'draft-user'); assert.equal(current.addresses[0].label, 'draft label');
     assert.equal(current.names[0].value, 'Unified saved name'); assert.equal(current.facts[0].value, 'Blue');
     assert.equal(current.dates[0].date, '2000-05');
     const contactId = current.contacts[0].id;
@@ -94,8 +94,11 @@ async function api(path, method = 'GET', body) {
     assert(await save.isDisabled()); assert(await f.locator('#panel').evaluate(el => el.inert));
     release(); await f.waitForFunction(() => !panel.saving && !panel.isDirty()); await page.unroute('**/api/people/' + person.id);
     // Preserve fields which the editor does not expose.
-    await tab('addresses'); await field('locality').fill('New city'); await saved();
+    await tab('addresses'); await field('label').fill('work'); await saved();
     assert.equal((await api('/people/' + person.id)).addresses[0].formatted, 'Original formatted address');
+    // Except a formatted line that would go on showing an address the owner has just corrected.
+    await field('locality').fill('New city'); await saved();
+    assert.equal((await api('/people/' + person.id)).addresses[0].formatted, '');
     // Two editors must not silently overwrite one another.
     await tab('notes'); await f.locator('#notes').fill('Stale draft');
     const other = await api('/people/' + person.id);

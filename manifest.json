@@ -3,7 +3,7 @@
   "id": "meridian",
   "name": "Meridian",
   "description": "People, organizations and groups, how they relate, and what you know about them: profiles with pictures from Argus, relationships, a graph of your network, a timeline of how it changed, and contact import.",
-  "version": "0.10.0",
+  "version": "0.12.0",
   "publisher": {
     "name": "Aureate Empyrean",
     "originalAuthors": [
@@ -113,6 +113,10 @@
       {
         "module": "atlas",
         "projection": "place-directory"
+      },
+      {
+        "module": "atlas",
+        "projection": "address-suggest"
       },
       {
         "module": "chronos",

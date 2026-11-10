@@ -711,6 +711,7 @@ def test_schema_6_reversal_leaves_a_schema_5_database(client):
     relate(client, a, "parent", b, kinship="adoptive")
     path = client.app.state.db.path
     with sqlite3.connect(path) as conn:
+        conn.executescript(dbmod.SCHEMA_8_REVERSAL)
         conn.executescript(dbmod.SCHEMA_7_REVERSAL)
         conn.executescript(dbmod.SCHEMA_6_REVERSAL)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 5

@@ -66,6 +66,15 @@ A relationship is stored **once**, as *subject — type — object*.
 - **Custom types:** a user-defined type is created from the editor ("Something else…")
   and stored in `relationship_types`, so new vocabulary needs no migration. Asking for an
   existing label and inverse returns that type instead of a duplicate.
+- **Sentences:** the editor's "Reads as" line, the graph's connection panel and the "Still
+  going on?" dialog write a relationship as a sentence. A phrase that has its own verb is used
+  as it is ("Example University has student Test Person", "Test Person studies at Example
+  University"); any other phrase gets "is", or "was" for an ended record in the graph panel
+  ("Eva is parent of Juraj"). The editor's "Test Person is" heading drops its "is" the same
+  way. `MeridianUX.relationIsVerbPhrase` decides this from the English
+  phrase, and the templates `{a} is {p} {b}`, `{a} was {p} {b}` and `{a} {p} {b}` are catalog
+  keys. Labels are never rewritten. A custom label that reads wrongly can start with its own
+  verb ("is godparent of"). Tests: `tests/relationship-sentences.test.cjs`.
 - **Former relationships:** "former partner" is not a type. It is a partnership whose
   `state` is `former`.
 - **Employment is deliberately not a relationship type.** The Work record (Milestone 1's

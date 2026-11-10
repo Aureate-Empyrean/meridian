@@ -46,7 +46,7 @@ async function open(page, module) {
   page.on("pageerror", (e) => errors.push(String(e)));
   const meridian = await open(page, "meridian");
   const state = await meridian.evaluate(() => api("/state"));
-  check(/^0\.[6-9]\./.test(state.version), `Meridian ${state.version} answers inside Nexus`);
+  check(Number(state.version.split(".")[1]) >= 6, `Meridian ${state.version} answers inside Nexus`);
   const daniela = (await meridian.evaluate(() => api("/people?q=Dátumová"))).items[0];
   check(daniela, "the person linked by the Phase 2 journey is still there");
   const linked = await meridian.evaluate((id) => api(`/entities/${id}/linked-from`), daniela.id);

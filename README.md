@@ -9,12 +9,12 @@ the long-term model are in
 
 | | |
 | --- | --- |
-| Module ID, version | `meridian`, 0.10.0 (schema 7) in this source, on aetest and in production |
+| Module ID, version | `meridian`, 0.12.0 (schema 8) in this source and on aetest; 0.10.0 in production |
 | Port | 17333 |
 | Nexus range | `>=0.1.8,<0.2.0` (0.6.1 tested on Nexus 0.1.13 on aetest; production runs 0.1.14, which supports every contract used) |
 | Capabilities | `ui.application`, `storage.data`, `projections.read`, `references.create`, and since 0.6.0 `events.publish`, `references.read`, `references.resolve` |
 | Resources | `person`, `organization`, `group` (resolvable), Entity References v2 with enumeration; outgoing `meridian.representative-image` edges to Argus photos (readers `argus`); resolve scopes `chronos`/`event`, `mnemosyne`/`note`, `task`, `project`, `collection` (to name the items that link here) |
-| Projections | Reads `argus`/`photo-library` and `argus`/`photo-renditions`; provides `dated-items` (birthdays, anniversaries) and `people-directory` (names only) |
+| Projections | Reads `argus`/`photo-library`, `argus`/`photo-renditions` and, since 0.12.0, `atlas`/`address-suggest`; provides `dated-items` (birthdays, anniversaries) and `people-directory` (names only) |
 | Events | Produces `meridian.dated-items.changed` (a hint after person writes) |
 | Backup | Backup v1, format `meridian-sqlite`; a backup is restorable by `>=<its version>,<1` |
 | Runtime | Python 3.13, FastAPI, SQLite; d3-force vendored in the page; no external services |
@@ -73,13 +73,22 @@ back to initials when there is no picture or Argus cannot provide it. Meridian r
 Status and verification: [`../argus/docs/STATUS.md`](../argus/docs/STATUS.md). Browser journey:
 `tests/e2e/pictures_e2e.py` (aetest only).
 
-### Navigation (0.4.1)
+### Navigation (0.11.0 on aetest)
 
 Back/Forward and deep links through Nexus navigation history: `frontend/navigation.js` is the route adapter
-(routes `/`, `/people[/<id>]`, `/organizations[/<id>]`, `/groups[/<id>]`, `/graph`, `/timeline`, `/import`,
-`/trash`, `/settings`; tabs and filters are not in URLs), with the vendored SDK and a guard for unsaved
-side-panel edits. Leaving Meridian with unsaved edits still discards them. Nexus owns the browser URL; see
-`../empyrean-nexus/docs/navigation-history.md`.
+(routes `/`, `/people[/<id>]`, `/organizations[/<id>]`, `/groups[/<id>]`, `/interactions/<id>`, `/graph`, `/timeline`,
+`/import`, `/trash`, `/settings`). An unknown address is an explicit not-found page. An Interaction link selects that
+Interaction on its first remaining participant's profile. Search, filters, loaded count, tab and scroll are private
+per-entry state.
+
+Unsaved side-panel edits are protected everywhere: a click asks first; Back/Forward moves the address and keeps the
+editor and a notice, without touching history; leaving Meridian or reloading keeps an acknowledged draft, offered in a
+tray. A recovered contact draft that meets a newer saved record is refused as a conflict, with **Keep my version**.
+Nexus owns the browser URL; see `../empyrean-nexus/docs/navigation-history.md`.
+
+### Address search and reuse of records (0.12.0 on aetest)
+
+The address editor can find real addresses as you type, after you turn it on there and Atlas's online maps are on. Only the search text leaves, through Atlas to Photon; Meridian itself has no network access. Choosing a result fills the structured fields. Every field stays editable by hand, and a corrected address loses its map position. Work, education and New Organization find existing Organizations; Membership finds or creates groups. Similar names are never merged. Design: [ADR 0031](../architecture/decisions/0031-address-suggestions-through-atlas.md). Browser journey: `tests/e2e/qol_e2e.cjs` (aetest only). Larger requests: [audit](../architecture/audits/2026-11-09-meridian-contact-editing-qol-audit.md).
 
 ### Education, Interests and Interactions (0.7.0; 0.9.0 on aetest)
 
@@ -182,13 +191,15 @@ the Nexus bridge; screenshots in `docs/screenshots/0.5.0/`):
 ```bash
 node tests/ux.test.cjs
 node tests/navigation-routes.test.cjs
+node tests/relationship-sentences.test.cjs
 docker run -d --name meridian-ux-harness -p 127.0.0.1:17399:8000 -v G:/AureateEmpyrean/meridian/tests/e2e:/harness:ro -e PYTHONPATH=/app/backend -e MERIDIAN_DATA=/tmp/h meridian:0.5.0 python /harness/harness.py 8000
 PLAYWRIGHT_PATH=G:/AureateEmpyrean/mnemosyne/node_modules/playwright node tests/e2e/ux_e2e.cjs
 docker rm -f meridian-ux-harness
 ```
 
 `tests/e2e/contact_editing_e2e.cjs` checks the unified contact editor against the harness (port 17401; `PHONE=1`
-for 390 px). Inside the real aetest Nexus: `tests/e2e/phase2_e2e.cjs` (cross-module journey; creates synthetic data,
+for 390 px). `tests/e2e/autocomplete_layout_e2e.cjs` checks that Organization suggestions in Work and Education float
+over the form without moving any field, at 390, 820 and 1440 px and at 200% zoom (harness on port 17402). Inside the real aetest Nexus: `tests/e2e/phase2_e2e.cjs` (cross-module journey; creates synthetic data,
 run once per installation) and `tests/e2e/phase2_readonly_check.cjs` (read-only re-check for later releases). The UX journey also runs inside the real Nexus on aetest (never production) with
 `NEXUS_URL=http://localhost:12334`; it adds synthetic people, so run it once per installation.
 `scripts/db_fingerprint.py` and `scripts/compare_rows.py` compare a database before and after an update.
