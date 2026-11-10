@@ -55,3 +55,29 @@ renditions/
 *.zip
 *.bak
 *.dump
+
+# User exports and browser test output (runtime data must stay out of Git)
+exports/
+*.ics
+*.vcf
+*.csv
+*.gpx
+*.kml
+*.kmz
+*.geojson
+!tests/fixtures/*.ics
+!tests/fixtures/*.vcf
+!tests/fixtures/*.csv
+!tests/fixtures/*.gpx
+!tests/fixtures/*.kml
+!tests/fixtures/*.geojson
+test-results/
+playwright-report/
+
+# More credentials and archives
+*.crt
+*.jks
+id_rsa*
+id_ed25519*
+*.tgz
+media/
