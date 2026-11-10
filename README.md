@@ -198,7 +198,8 @@ docker rm -f meridian-ux-harness
 ```
 
 `tests/e2e/contact_editing_e2e.cjs` checks the unified contact editor against the harness (port 17401; `PHONE=1`
-for 390 px). Inside the real aetest Nexus: `tests/e2e/phase2_e2e.cjs` (cross-module journey; creates synthetic data,
+for 390 px). `tests/e2e/autocomplete_layout_e2e.cjs` checks that Organization suggestions in Work and Education float
+over the form without moving any field, at 390, 820 and 1440 px and at 200% zoom (harness on port 17402). Inside the real aetest Nexus: `tests/e2e/phase2_e2e.cjs` (cross-module journey; creates synthetic data,
 run once per installation) and `tests/e2e/phase2_readonly_check.cjs` (read-only re-check for later releases). The UX journey also runs inside the real Nexus on aetest (never production) with
 `NEXUS_URL=http://localhost:12334`; it adds synthetic people, so run it once per installation.
 `scripts/db_fingerprint.py` and `scripts/compare_rows.py` compare a database before and after an update.
