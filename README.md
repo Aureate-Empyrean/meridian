@@ -9,9 +9,9 @@ the long-term model are in
 
 | | |
 | --- | --- |
-| Module ID, version | `meridian`, 0.12.0 (schema 8) in this source and on aetest; 0.10.0 in production |
+| Module ID, version | `meridian`, 0.12.0 (schema 8) in production, built from `e80b402`. This source still says 0.12.0 but adds two fixes that are not deployed (see below) |
 | Port | 17333 |
-| Nexus range | `>=0.1.8,<0.2.0` (0.6.1 tested on Nexus 0.1.13 on aetest; production runs 0.1.14, which supports every contract used) |
+| Nexus range | `>=0.1.8,<0.2.0` (0.6.1 tested on Nexus 0.1.13 on aetest; production runs Meridian 0.12.0 on Nexus 0.1.15 since 2026-11-10) |
 | Capabilities | `ui.application`, `storage.data`, `projections.read`, `references.create`, and since 0.6.0 `events.publish`, `references.read`, `references.resolve` |
 | Resources | `person`, `organization`, `group` (resolvable), Entity References v2 with enumeration; outgoing `meridian.representative-image` edges to Argus photos (readers `argus`); resolve scopes `chronos`/`event`, `mnemosyne`/`note`, `task`, `project`, `collection` (to name the items that link here) |
 | Projections | Reads `argus`/`photo-library`, `argus`/`photo-renditions` and, since 0.12.0, `atlas`/`address-suggest`; provides `dated-items` (birthdays, anniversaries) and `people-directory` (names only) |
@@ -29,9 +29,9 @@ the long-term model are in
 
 | Installation | Version | Notes |
 | --- | --- | --- |
-| This source tree | 0.10.0 | Adds the `contact-addresses` projection for Atlas ([record](../VALIDATION_ATLAS_MARKERS_AETEST_2026-11-09.md)); roadmap Phase 3, the backlinks standard and Place links ([record](../VALIDATION_PHASE4_AETEST_2026-11-09.md)) |
-| Local `aetest` (`http://localhost:12334`) | **0.10.0** (schema 7) | Updated through Nexus with verified backups (0.5.0 → 0.5.1 → 0.6.0 → 0.6.1). Inside the real Nexus: 0.5 UX journey 83/83, Phase 2 cross-module journey, navigation 17/17, pictures 12/12 ([Phase 2 record](../VALIDATION_PHASE2_AETEST_2026-11-07.md), [Phase 1](../VALIDATION_PHASE1_AETEST_2026-11-07.md), [0.5.0](../VALIDATION_MERIDIAN_0.5.0_AETEST_2026-11-07.md)). Test data |
-| Production Nexus | **0.10.0** | Deployed and service-verified 2026-11-09 ([record](../DEPLOYMENT_ATLAS_MERIDIAN_EXODUS_2026-11-09.md)); schema 7, existing data preserved. 0.6.1 deployed 2026-11-07 (schema 5 → 6, data preserved; [record](../DEPLOYMENT_PHASE2_EXODUS_2026-11-07.md)); owner browser checks outstanding. 0.4.0 deployed 2026-11-07 with data preserved ([record](../DEPLOYMENT_MERIDIAN_ARGUS_2026-11-07.md)); 0.4.1 (navigation adapter) deployed the same day on Nexus 0.1.11 ([record](../DEPLOYMENT_NAVIGATION_2026-11-07.md)). Owner confirmed Mouse 4 / Back in production; the picture UI and other navigation scenarios are not verified there |
+| This source tree (`main`) | 0.12.0 and two fixes, **not deployed** | Production's `e80b402` plus the relationship sentences fix (#23, Issue #21) and the Organization suggestion overlay (#24, Issue #18), merged through `release/exodus-2026-11-10`. The version number was not raised, so it still says 0.12.0. Schema 8, as in production |
+| Local `aetest` (`http://localhost:12334`) | **0.12.0** (schema 8) | Updated with verified backups on 2026-11-10, no row changed ([record](../DEPLOYMENT_EXODUS_2026-11-10.md)). Its image is an earlier 0.12.0 build than production's. Neither fix above is on aetest. Earlier, inside the real Nexus: 0.5 UX journey 83/83, Phase 2 cross-module journey, navigation 17/17, pictures 12/12 ([Phase 2 record](../VALIDATION_PHASE2_AETEST_2026-11-07.md), [Phase 1](../VALIDATION_PHASE1_AETEST_2026-11-07.md), [0.5.0](../VALIDATION_MERIDIAN_0.5.0_AETEST_2026-11-07.md)). Test data |
+| Production Nexus | **0.12.0** (schema 8) | Built from a clean clone of `e80b402` and deployed 2026-11-10 ([record](../DEPLOYMENT_EXODUS_2026-11-10.md)). Image `sha256:15a49c047b650ca043e18a84359f8c037d66c0ce0325480d50c486aab98b1db8`. Schema 7 → 8, existing data preserved. Verified at service level only; the owner's browser checks are outstanding. There is no `v0.12.0` tag. 0.10.0 deployed and service-verified 2026-11-09 ([record](../DEPLOYMENT_ATLAS_MERIDIAN_EXODUS_2026-11-09.md)); schema 7, existing data preserved. 0.6.1 deployed 2026-11-07 (schema 5 → 6, data preserved; [record](../DEPLOYMENT_PHASE2_EXODUS_2026-11-07.md)); owner browser checks outstanding. 0.4.0 deployed 2026-11-07 with data preserved ([record](../DEPLOYMENT_MERIDIAN_ARGUS_2026-11-07.md)); 0.4.1 (navigation adapter) deployed the same day on Nexus 0.1.11 ([record](../DEPLOYMENT_NAVIGATION_2026-11-07.md)). Owner confirmed Mouse 4 / Back in production; the picture UI and other navigation scenarios are not verified there |
 
 ## Status
 
@@ -73,7 +73,7 @@ back to initials when there is no picture or Argus cannot provide it. Meridian r
 Status and verification: [`../argus/docs/STATUS.md`](../argus/docs/STATUS.md). Browser journey:
 `tests/e2e/pictures_e2e.py` (aetest only).
 
-### Navigation (0.11.0 on aetest)
+### Navigation (0.11.0; in production with 0.12.0)
 
 Back/Forward and deep links through Nexus navigation history: `frontend/navigation.js` is the route adapter
 (routes `/`, `/people[/<id>]`, `/organizations[/<id>]`, `/groups[/<id>]`, `/interactions/<id>`, `/graph`, `/timeline`,
@@ -86,7 +86,7 @@ editor and a notice, without touching history; leaving Meridian or reloading kee
 tray. A recovered contact draft that meets a newer saved record is refused as a conflict, with **Keep my version**.
 Nexus owns the browser URL; see `../empyrean-nexus/docs/navigation-history.md`.
 
-### Address search and reuse of records (0.12.0 on aetest)
+### Address search and reuse of records (0.12.0; in production)
 
 The address editor can find real addresses as you type, after you turn it on there and Atlas's online maps are on. Only the search text leaves, through Atlas to Photon; Meridian itself has no network access. Choosing a result fills the structured fields. Every field stays editable by hand, and a corrected address loses its map position. Work, education and New Organization find existing Organizations; Membership finds or creates groups. Similar names are never merged. Design: [ADR 0031](../architecture/decisions/0031-address-suggestions-through-atlas.md). Browser journey: `tests/e2e/qol_e2e.cjs` (aetest only). Larger requests: [audit](../architecture/audits/2026-11-09-meridian-contact-editing-qol-audit.md).
 
