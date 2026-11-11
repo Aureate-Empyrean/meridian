@@ -15,7 +15,7 @@ SECTIONS = {
         "addresses",
         "entity_id",
         ("label", "street", "extended", "po_box", "locality", "region", "postal_code", "country",
-         "formatted", "is_primary"),
+         "formatted", "is_primary", "latitude", "longitude", "geo_precision", "geo_key"),
     ),
     "dates": ("personal_dates", "entity_id", ("kind", "label", "date", "description", "approximate")),
     "employments": ("employments", "person_id", ("organization_id", "title", "department", "role")),
@@ -34,7 +34,22 @@ SECTIONS = {
         ("category", "subject", "sentiment", "context", "target_kind", "target_ref"),
     ),
 }  # fmt: skip
-NULLABLE = ("valid_from", "valid_until", "confidence", "date", "organization_id", "target_ref")
+NULLABLE = ("valid_from", "valid_until", "confidence", "date", "organization_id", "target_ref",
+            "latitude", "longitude")  # fmt: skip
+GEOGRAPHY = ("street", "postal_code", "locality", "region", "country")
+
+
+def geo_key(address: dict) -> str:
+    """Which address a stored position belongs to. The editor computes the same value."""
+    return "|".join(str(address.get(k) or "").strip().lower() for k in GEOGRAPHY)
+
+
+def checked_position(values: dict) -> dict:
+    """Coordinates are kept only for the exact address they were found for."""
+    complete = values.get("latitude") is not None and values.get("longitude") is not None
+    if not complete or values.get("geo_key") != geo_key(values):
+        values.update(latitude=None, longitude=None, geo_precision="", geo_key="")
+    return values
 
 
 def compose(name: dict) -> str:
@@ -219,6 +234,8 @@ def save_person(conn, doc: dict, entity_id=None, source_id=None, keep=False, kin
             values = dict(item)
             if section in ("employments", "education"):
                 values["organization_id"] = work_organization(conn, values, now)
+            if section == "addresses":
+                values = checked_position(values)
             if section in ("contacts", "addresses"):
                 group = values.get("channel", "address")
                 values["is_primary"] = (

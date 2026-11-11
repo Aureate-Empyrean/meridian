@@ -315,7 +315,7 @@ def test_contact_addresses_share_geography_and_identity_only(client):
     assert out["next_cursor"] is None and len(out["items"]) == 1
     item = out["items"][0]
     assert set(item) == {"id", "resource", "label", "address_label", "text", "parts", "current", "primary", "open_path", "place_ref", "updated_at"}
-    assert item["resource"] == f"nexus:v1:meridian:person:{person['id']}" and item["open_path"] == f"/people/{person['id']}"
+    assert item["resource"] == f"nexus:v1:meridian:person:{person['id']}" and item["open_path"] == f"/people/{person['id']}/addresses/{item['id']}"
     assert item["parts"] == {"street": "Dlhá 5", "postal_code": "811 01", "locality": "Bratislava", "region": "", "country": "Slovakia"}
     assert item["current"] is True and item["primary"] is True and item["label"] == "Eva Malá"
 
